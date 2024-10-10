@@ -1,0 +1,86 @@
+{
+  "content": [
+    {
+      "dateCreated": "2024-10-08T19:04:39.980Z",
+      "dateUpdated": "2024-10-08T19:04:39.980Z",
+      "comments": "string",
+      "additionalEmails": [
+        "string"
+      ],
+      "renewalNotificationsDisabled": true,
+      "locale": "string",
+      "cert": {
+        "dateCreated": "2024-10-08T19:04:39.980Z",
+        "dateUpdated": "2024-10-08T19:04:39.980Z",
+        "commonName": "string",
+        "dnsNames": [
+          "string"
+        ],
+        "providerDateCreated": "2024-10-08T19:04:39.980Z",
+        "dateValidFrom": "2024-10-08T19:04:39.980Z",
+        "dateValidUntil": "2024-10-08T19:04:39.980Z",
+        "daysRemaining": 0,
+        "csr": "string",
+        "serverPlatform": "APACHE",
+        "algorithmHash": "RSA",
+        "rootHash": "SHA_1",
+        "organizationUnits": [
+          "string"
+        ],
+        "providerId": 0,
+        "serialNumber": "string",
+        "revokeStatus": "PENDING",
+        "provider": "DIGICERT",
+        "dcvMethod": "EMAIL",
+        "dcvEmails": [
+          {
+            "dnsName": "string",
+            "emailDomain": "string",
+            "email": "string"
+          }
+        ],
+        "intermediateCert": "string",
+        "endEntityCert": "string",
+        "rootCert": "string",
+        "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+      },
+      "certType": "SSL_OV_BASIC",
+      "price": {
+        "certType": "SSL_OV_BASIC",
+        "provider": "DIGICERT",
+        "term": 0,
+        "totalPrice": 0,
+        "products": [
+          {
+            "product": "string",
+            "item": "string",
+            "price": 0
+          }
+        ],
+        "errorMessage": "string"
+      },
+      "groupId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "contacts": [
+        "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+      ],
+      "providerId": 0,
+      "provider": "DIGICERT",
+      "status": "REISSUE_REQUEST_PENDING",
+      "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "history": [
+        {
+          "dateCreated": "2024-10-08T19:04:39.981Z",
+          "userName": "string",
+          "text": "string",
+          "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+        }
+      ]
+    }
+  ],
+  "page": {
+    "size": 0,
+    "totalElements": 0,
+    "totalPages": 0,
+    "number": 0
+  }
+}

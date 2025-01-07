@@ -1,6 +1,6 @@
-namespace TestConsole.Helpers;
-
 using System.Globalization;
+
+namespace TestConsole.Helpers;
 
 public abstract class TitleCaseConverter
 {

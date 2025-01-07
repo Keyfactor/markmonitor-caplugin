@@ -1,0 +1,60 @@
+{
+  "content": [
+    {
+      "dateCreated": "2024-10-10T16:27:20.573Z",
+      "dateUpdated": "2024-10-10T16:27:20.573Z",
+      "name": "string",
+      "assumedName": "string",
+      "address1": "string",
+      "address2": "string",
+      "city": "string",
+      "state": "string",
+      "country": "string",
+      "zipcode": "string",
+      "phone": "string",
+      "active": true,
+      "contacts": [
+        {
+          "dateCreated": "2024-10-10T16:27:20.573Z",
+          "dateUpdated": "2024-10-10T16:27:20.573Z",
+          "firstName": "string",
+          "lastName": "string",
+          "jobTitle": "string",
+          "email": "string",
+          "phone": "string",
+          "phoneExtension": "string",
+          "organizationId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+          "provider": "DIGICERT",
+          "username": "string",
+          "contactTypes": [
+            {
+              "type": "ORGANIZATION_CONTACT"
+            }
+          ],
+          "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+        }
+      ],
+      "validations": [
+        {
+          "dateCreated": "2024-10-10T16:27:20.573Z",
+          "dateUpdated": "2024-10-10T16:27:20.573Z",
+          "type": "EV",
+          "name": "string",
+          "providerDateCreated": "2024-10-10T16:27:20.573Z",
+          "dateValidatedUntil": "2024-10-10T16:27:20.573Z",
+          "status": "PENDING",
+          "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+        }
+      ],
+      "providerId": 0,
+      "provider": "DIGICERT",
+      "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+    }
+  ],
+  "page": {
+    "size": 0,
+    "totalElements": 0,
+    "totalPages": 0,
+    "number": 0
+  }
+}

@@ -3,7 +3,7 @@ using Newtonsoft.Json;
 namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Models;
 
 /// <summary>
-/// Represents the certificate details.
+///     Represents the certificate details.
 /// </summary>
 public class MarkMonitorCertificate
 {
@@ -55,9 +55,9 @@ public class MarkMonitorCertificate
 }
 
 /// <summary>
-/// Represents pagination information.
+///     Represents pagination information.
 /// </summary>
-public class PageInfo
+public class MarkMonitorPageInfo
 {
     [JsonProperty("size")] public int Size { get; set; }
 

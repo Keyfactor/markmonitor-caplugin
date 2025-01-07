@@ -1,7 +1,6 @@
 ﻿using System.ComponentModel;
 using System.Reflection;
 
-
 namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Models;
 
 public enum CertificateEnrollmentType
@@ -18,27 +17,59 @@ public enum CertificateEnrollmentType
     UCC_OV_SSL // Multi domain SSL certificate validated using organization information and domain name
 }
 
+public enum CertOrderTypes
+{
+    //SSL_OV_BASIC, SSL_EV_BASIC, SSL_DV_GEOTRUST, SSL_DV_THAWTE, SSL_OV_THAWTE_WEBSERVER, SSL_EV_THAWTE_WEBSERVER, SSL_OV_GEOTRUST_TRUEBIZID, SSL_EV_GEOTRUST_TRUEBIZID, SSL_OV_SECURESITE, SSL_EV_SECURESITE, SSL_OV_SECURESITE_PRO, SSL_EV_SECURESITE_PRO
+    [Description("SSL_OV_BASIC")] SslOvBasic,
+
+    [Description("SSL_EV_BASIC")] SslEvBasic,
+
+    [Description("SSL_DV_GEOTRUST")] SslDvGeotrust,
+
+    [Description("SSL_DV_THAWTE")] SslDvThawte,
+
+    [Description("SSL_OV_THAWTE_WEBSERVER")]
+    SslOvThawteWebserver,
+
+    [Description("SSL_EV_THAWTE_WEBSERVER")]
+    SslEvThawteWebserver,
+
+    [Description("SSL_OV_GEOTRUST_TRUEBIZID")]
+    SslOvGeotrustTruebizid,
+
+    [Description("SSL_EV_GEOTRUST_TRUEBIZID")]
+    SslEvGeotrustTruebizid,
+
+    [Description("SSL_OV_SECURESITE")] SslOvSecuresite,
+
+    [Description("SSL_EV_SECURESITE")] SslEvSecuresite,
+
+    [Description("SSL_OV_SECURESITE_PRO")] SslOvSecuresitePro,
+
+    [Description("SSL_EV_SECURESITE_PRO")] SslEvSecuresitePro
+}
+
 public enum OrderActions
 {
     // https://api.markmonitor.com/certs/swagger/ssl-certs-api.html#/order/actionPatch
     [Description("cancel")] Cancel,
-    
+
     [Description("reissue")] Reissue,
-    
+
     [Description("revoke")] Revoke,
-    
+
     [Description("sendCertificateEmail")] SendCertificateEmail,
-    
+
     [Description("sendDcvEmail")] SendDcvEmail,
-    
+
     [Description("validateDomains")] ValidateDomains,
-    
-    [Description("updateAdditionalEmails")] UpdateAdditionalEmails
+
+    [Description("updateAdditionalEmails")]
+    UpdateAdditionalEmails
 }
 
 public enum OrderStatus
 {
-    
     // https://api.markmonitor.com/certs/swagger/ssl-certs-api.html#/order/get_orders
     [Description("REISSUE_REQUEST_PENDING")]
     ReissueRequestPending,
@@ -72,6 +103,34 @@ public enum OrderStatus
     [Description("DIGI_EXPIRED")] DigiExpired,
 
     [Description("DIGI_FAILED")] DigiFailed
+}
+
+public enum AlgorithmTypes
+{
+    //RSA, ECC, DSA
+    [Description("RSA")] Rsa,
+
+    [Description("ECC")] Ecc,
+
+    [Description("DSA")] Dsa
+}
+
+public enum CertServerPlatforms
+{
+    //APACHE, NGINX, DEFAULT, MICROSOFT_IIS_10, MICROSOFT_IIS_8, MICROSOFT_IIS_7, MICROSOFT_IIS_5_OR_6
+    [Description("APACHE")] Apache,
+
+    [Description("NGINX")] Nginx,
+
+    [Description("DEFAULT")] Default,
+
+    [Description("MICROSOFT_IIS_10")] MicrosoftIis10,
+
+    [Description("MICROSOFT_IIS_8")] MicrosoftIis8,
+
+    [Description("MICROSOFT_IIS_7")] MicrosoftIis7,
+
+    [Description("MICROSOFT_IIS_5_OR_6")] MicrosoftIis5Or6
 }
 
 public static class EnumExtensions

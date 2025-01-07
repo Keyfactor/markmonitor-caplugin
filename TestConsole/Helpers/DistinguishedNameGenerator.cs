@@ -4,6 +4,8 @@ namespace TestConsole.Helpers;
 
 public abstract class DistinguishedNameGenerator
 {
+    // Base URL for random word API (you can replace this with a different API if needed)
+    private const string RandomWordApiUrl = "https://random-word-api.herokuapp.com/word?number=1";
     private static readonly HttpClient HttpClient = new();
 
     // Predefined list of country codes
@@ -11,9 +13,6 @@ public abstract class DistinguishedNameGenerator
 
     // Random number generator
     private static readonly Random random = new();
-
-    // Base URL for random word API (you can replace this with a different API if needed)
-    private const string RandomWordApiUrl = "https://random-word-api.herokuapp.com/word?number=1";
 
     // Predefined list of English words for fallback
     private static readonly string[] FallbackWords =
@@ -34,7 +33,8 @@ public abstract class DistinguishedNameGenerator
     {
         // Generate random components
         var randomFqdn = await GenerateRandomFqdnAsync();
-        var organization = await GetRandomWordAsync();
+        // var organization = await GetRandomWordAsync();
+        var organization = "Markmonitor";
         var organizationalUnit = await GetRandomWordAsync();
         var locality = await GetRandomWordAsync();
         var stateOrProvince = await GetRandomWordAsync();
@@ -47,16 +47,18 @@ public abstract class DistinguishedNameGenerator
         return distinguishedName;
     }
 
-    private static async Task<string> GenerateRandomFqdnAsync()
+    protected static async Task<string> GenerateRandomFqdnAsync()
     {
         var word1 = await GetRandomWordAsync();
-        var word2 = await GetRandomWordAsync();
-        var tld = GetRandomTld();
+        // var word2 = await GetRandomWordAsync();
+        const string word2 = "mmcertdomain";
+        // var tld = GetRandomTld();
+        const string tld = "com";
 
         return $"{word1}.{word2}.{tld}".ToLower();
     }
 
-    private static async Task<string> GetRandomWordAsync()
+    protected static async Task<string> GetRandomWordAsync()
     {
         try
         {

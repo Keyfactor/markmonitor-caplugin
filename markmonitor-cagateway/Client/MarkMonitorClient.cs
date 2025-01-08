@@ -5,6 +5,7 @@ using Keyfactor.AnyGateway.Extensions;
 using Keyfactor.Extensions.CAPlugin.MarkMonitor.Models;
 using Keyfactor.Logging;
 using Keyfactor.PKI.Enums.EJBCA;
+using Keyfactor.PKI.PEM;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -134,7 +135,7 @@ public class MarkMonitorClient
             var certificateOrders =
                 await ListCertificateOrdersAsync(0, caId, sort, limit); //todo: providerId support???
             _logger.LogDebug("Retrieved '{CertificateCount}' certificate orders", certificateOrders.Count);
-            
+
             var numberOfCertificates = 0;
             foreach (var certificateDetail in certificateOrders)
             {
@@ -143,13 +144,15 @@ public class MarkMonitorClient
                 _logger.LogTrace("Certificate {CertificateId} status: {CertificateStatus}", certificateDetail.Id,
                     certStatus);
 
-                _logger.LogDebug("Converting certificate {CertificateId} revocation status {Status}", certificateDetail.Id, certificateDetail.Cert.RevokeStatus);
+                _logger.LogDebug("Converting certificate {CertificateId} revocation status {Status}",
+                    certificateDetail.Id, certificateDetail.Cert.RevokeStatus);
                 DateTime? revocationDate = null;
                 if (certificateDetail.Cert.RevokeStatus == "REVOKED")
                 {
                     _logger.LogDebug("Certificate {CertificateId} is revoked", certificateDetail.Id);
                     revocationDate = Convert.ToDateTime(certificateDetail.Cert.DateValidUntil);
                 }
+
                 certificatesBuffer.Add(
                     new AnyCAPluginCertificate
                     {
@@ -261,6 +264,10 @@ public class MarkMonitorClient
             _logger.LogError("An error has occurred: {EMessage}", e.Message);
             return null;
         }
+        finally
+        {
+            _logger.MethodExit();
+        }
     }
 
     public async Task<List<MarkMonitorOrganizationResponse>> ListOrganizationsAsync(int page = 0, int limit = 0,
@@ -296,11 +303,14 @@ public class MarkMonitorClient
 
                 if (!response.IsSuccessStatusCode) throw new Exception(BuildErrorString(content));
 
-                _logger.LogDebug("Deserializing response content to MarkMonitorListOrdersResponse");
-                var certificateListResponse = JsonConvert.DeserializeObject<MarkMonitorListOrgsResponse>(content);
-                output.AddRange(certificateListResponse.Content);
+                _logger.LogDebug("Deserializing response content to MarkMonitorListOrgResponse");
+                var orgListResponse = JsonConvert.DeserializeObject<MarkMonitorListOrgsResponse>(content);
+
+                _logger.LogDebug("Adding organizations to output");
+                output.AddRange(orgListResponse.Content);
                 currentPage++;
-                allPagesDownloaded = currentPage >= certificateListResponse.MarkMonitorPage.TotalPages;
+                _logger.LogTrace("Total organizations added to output: {OutputCount}", output.Count);
+                allPagesDownloaded = currentPage >= orgListResponse.MarkMonitorPage.TotalPages;
             } while (!allPagesDownloaded);
 
             return output;
@@ -314,6 +324,10 @@ public class MarkMonitorClient
         {
             _logger.LogError("An error has occurred: {EMessage}", e.Message);
             return null;
+        }
+        finally
+        {
+            _logger.MethodExit();
         }
     }
 
@@ -367,7 +381,10 @@ public class MarkMonitorClient
         };
         return requestAlgorithm;
     }
-    public async Task<EnrollmentResult> EnrollCertificateAsync(string csr, string subject, Dictionary<string, string[]> san, string orderType, Dictionary<string,string> productParams, MarkMonitorConfig config)
+
+    public async Task<EnrollmentResult> EnrollCertificateAsync(string csr, string subject,
+        Dictionary<string, string[]> san, string orderType, Dictionary<string, string> productParams,
+        MarkMonitorConfig config)
     {
         _logger.MethodEntry();
         try
@@ -375,34 +392,52 @@ public class MarkMonitorClient
             EnsureAuthenticated();
 
             var additionalEmails =
-                productParams.ContainsKey("additionalEmails") ? productParams["additionalEmails"] : null;
+                productParams.GetValueOrDefault("additionalEmails");
             var additionalEmailsList = new List<string>();
             if (!string.IsNullOrEmpty(additionalEmails))
             {
+                _logger.LogTrace("Additional emails provided: {AdditionalEmails}", additionalEmails);
                 additionalEmails = additionalEmails.Replace(" ", ",");
                 additionalEmailsList = additionalEmails.Split(',').ToList();
             }
 
             var orgIds = await ListOrganizationsAsync(0, 1, config.OrgName);
+            _logger.LogTrace("Organizations found: {@OrgIds}", orgIds);
             var orgId = orgIds.FirstOrDefault()?.Id;
+            _logger.LogTrace("Organization ID: {OrgId}", orgId);
             if (string.IsNullOrEmpty(orgId))
             {
                 _logger.LogError("Organization ID not found for {OrgName}", config.OrgName);
-                return null;
+                throw new InvalidDataException($"Organization ID '{config.OrgName}' not found");
             }
 
             var orgIdGuid = Guid.Parse(orgId);
 
             var comments = productParams.GetValueOrDefault("comments", "Requested via Keyfactor Command");
+            _logger.LogTrace("Comments: {Comments}", comments);
             var locale = productParams.GetValueOrDefault("locale", "en");
+            _logger.LogTrace("Locale: {Locale}", locale);
             var provider = productParams.GetValueOrDefault("provider", "DIGICERT");
+            _logger.LogTrace("Provider: {Provider}", provider);
 
             // Lookup order type in CertOrderTypes enum
+            _logger.LogDebug("Looking up order type {OrderType} in CertOrderTypes enum", orderType);
             var certOrderType = Enum.Parse<CertOrderTypes>(orderType);
 
-            var csrObject = new Pkcs10CertificationRequest(Convert.FromBase64String(csr));
-            var requestAlgorithm = getCsrAlgorithm(csrObject);
+            _logger.LogDebug("Deserializing CSR");
+            _logger.LogTrace("CSR: {Csr}", csr);
+            var csrObject = new Pkcs10CertificationRequest(GetCsrBytes(csr));
+            var csrInfo = csrObject.GetCertificationRequestInfo();
 
+            _logger.LogDebug("Determining CSR algorithm");
+            var requestAlgorithm = getCsrAlgorithm(csrObject);
+            _logger.LogTrace("CSR algorithm: {RequestAlgorithm}", requestAlgorithm);
+
+            _logger.LogDebug("Converting CSR to PEM");
+            var csrPem = PemUtilities.DERToPEM(csrObject.GetEncoded(), PemUtilities.PemObjectType.CertRequest);
+            _logger.LogTrace("CSR PEM: {CsrPem}", csrPem);
+
+            _logger.LogDebug("Constructing certificate order object");
             var certOrder = new MarkMonitorCreateOrderRequest
             {
                 AdditionalEmails = additionalEmailsList,
@@ -416,25 +451,28 @@ public class MarkMonitorClient
                 Provider = provider,
                 Cert = new MarkMonitorOrderRequestCert
                 {
-                    CommonName = subject,
-                    Csr = csr,
+                    CommonName = cleanSubject(subject),
+                    Csr = csrPem.Replace("\r", ""),
                     DcvMethod = "EMAIL",
                     DcvEmails = new List<DcvEmail>(),
                     AlgorithmHash = requestAlgorithm
                 }
             };
 
+
+            _logger.LogDebug("Calling CreateCertificateOrder");
+            logCreateOrderRequest(certOrder);
             var order = await CreateCertificateOrder(certOrder);
 
             if (order == null) throw new Exception($"Failed to enroll certificate `{subject}` with MarkMonitor");
-            
+
             _logger.LogInformation("Certificate enrolled successfully");
             return new EnrollmentResult
             {
                 CARequestID = order.Id,
                 Certificate = order.Cert?.EndEntityCert,
                 Status = MarkMonitorCertificateStatusToCAStatus(order),
-                StatusMessage = "MarkMonitor order status: " + order.Status,
+                StatusMessage = "MarkMonitor order status: " + order.Status
             };
         }
         catch (Exception e)
@@ -448,12 +486,50 @@ public class MarkMonitorClient
         }
     }
 
+    private string cleanSubject(string subject)
+    {
+        _logger.MethodEntry();
+        try
+        {
+            // Search for the CN field in the Subject
+            var cnPrefix = "CN=";
+            var cnIndex = subject.IndexOf(cnPrefix, StringComparison.Ordinal);
+            if (cnIndex < 0) return subject;
+            var cnStart = cnIndex + cnPrefix.Length;
+            var cnEnd = subject.IndexOf(",", cnStart, StringComparison.Ordinal);
+            if (cnEnd < 0) cnEnd = subject.Length;
+            return subject.Substring(cnStart, cnEnd - cnStart);
+
+        }
+        finally
+        {
+            _logger.MethodExit();
+        }
+    }
+
+    private void logCreateOrderRequest(MarkMonitorCreateOrderRequest request)
+    {
+        _logger.MethodEntry();
+        _logger.LogTrace("CommonName: {CommonName}", request.Cert.CommonName);
+        _logger.LogTrace("OrganizationId: {OrganizationId}", request.OrganizationId);
+        _logger.LogTrace("CertType: {CertType}", request.CertType);
+        _logger.LogTrace("Locale: {Locale}", request.Locale);
+        _logger.LogTrace("Provider: {Provider}", request.Provider);
+        _logger.LogTrace("Comments: {Comments}", request.Comments);
+        _logger.LogTrace("AdditionalEmails: {AdditionalEmails}", request.AdditionalEmails);
+        _logger.LogTrace("SkipPrice: {SkipPrice}", request.SkipPrice);
+        _logger.LogTrace("CSR: {Csr}", request.Cert.Csr);
+        _logger.LogTrace("Cert: {@Cert}", request.Cert);
+        _logger.MethodExit();
+    }
+
     public async Task<OrderContent> CreateCertificateOrder(MarkMonitorCreateOrderRequest request)
     {
         _logger.MethodEntry();
         try
         {
             EnsureAuthenticated();
+            logCreateOrderRequest(request);
 
             var url = $"{BaseUrl}/certs/v1/order";
             _logger.LogDebug("Creating certificate order at {Url}", url);
@@ -462,11 +538,14 @@ public class MarkMonitorClient
                 Encoding.UTF8, "application/json"
             );
             _logger.LogTrace("Create order payload: {@Payload}", jsonPayload);
-            Console.WriteLine(JsonConvert.SerializeObject(request));
+            _logger.LogTrace("Request JSON: {Json}", request.JSONString());
+            Console.WriteLine(jsonPayload.ReadAsStringAsync());
             var response = await _httpClient.PostAsync(url, jsonPayload);
+            _logger.LogTrace("Response: {Response}", response);
 
             _logger.LogDebug("Reading response content");
             var content = await response.Content.ReadAsStringAsync();
+            _logger.LogTrace("Response content: {Content}", content);
             if (response.IsSuccessStatusCode)
             {
                 var order = JsonConvert.DeserializeObject<OrderContent>(content);
@@ -482,6 +561,10 @@ public class MarkMonitorClient
         {
             _logger.LogError("An error has occurred while attempting to create order: {EMessage}", e.Message);
             throw;
+        }
+        finally
+        {
+            _logger.MethodExit();
         }
     }
 
@@ -630,6 +713,32 @@ public class MarkMonitorClient
             return "No validation errors found.";
 
         return string.Join(Environment.NewLine, errorMessages);
+    }
+
+    private byte[] GetCsrBytes(string csr)
+    {
+        _logger.MethodEntry();
+        try
+        {
+            _logger.LogDebug("Attempting to decode CSR string");
+            // Try to decode the string from Base64
+            return Convert.FromBase64String(csr);
+        }
+        catch (FormatException)
+        {
+            _logger.LogDebug("Decoding failed, assuming PEM format");
+            // If decoding fails, assume the string is in PEM format
+            var pem = csr.Replace("-----BEGIN CERTIFICATE REQUEST-----", "")
+                .Replace("-----END CERTIFICATE REQUEST-----", "")
+                .Replace("\n", "")
+                .Replace("\r", "")
+                .Trim();
+            return Convert.FromBase64String(pem);
+        }
+        finally
+        {
+            _logger.MethodExit();
+        }
     }
 
     private int MarkMonitorCertificateStatusToCAStatus(OrderContent order)

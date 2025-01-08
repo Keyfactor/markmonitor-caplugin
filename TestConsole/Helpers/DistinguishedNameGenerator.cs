@@ -60,25 +60,26 @@ public abstract class DistinguishedNameGenerator
 
     protected static async Task<string> GetRandomWordAsync()
     {
-        try
-        {
-            // Get a random word from the API
-            var response = await HttpClient.GetAsync(RandomWordApiUrl);
-            response.EnsureSuccessStatusCode();
-
-            // Read response content as a string
-            var jsonResponse = await response.Content.ReadAsStringAsync();
-
-            // Deserialize the JSON response to a string array
-            var words = JsonSerializer.Deserialize<string[]>(jsonResponse);
-
-            return words != null ? words[0] : GetFallbackWord();
-        }
-        catch
-        {
-            // Fallback to predefined list if API call fails
-            return GetFallbackWord();
-        }
+        return GetFallbackWord();
+        // try
+        // {
+        //     // Get a random word from the API
+        //     var response = await HttpClient.GetAsync(RandomWordApiUrl);
+        //     response.EnsureSuccessStatusCode();
+        //
+        //     // Read response content as a string
+        //     var jsonResponse = await response.Content.ReadAsStringAsync();
+        //
+        //     // Deserialize the JSON response to a string array
+        //     var words = JsonSerializer.Deserialize<string[]>(jsonResponse);
+        //
+        //     return words != null ? words[0] : GetFallbackWord();
+        // }
+        // catch
+        // {
+        //     // Fallback to predefined list if API call fails
+        //     return GetFallbackWord();
+        // }
     }
 
     private static string GetFallbackWord()

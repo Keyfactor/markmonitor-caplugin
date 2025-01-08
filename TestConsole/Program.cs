@@ -39,10 +39,6 @@ internal abstract class Program
         if (orgs.Count <= 0) throw new Exception("No organizations found, please add some to run this test.");
         Console.WriteLine("ListOrgs test passed.");
 
-        // Console.WriteLine("Testing CreateCertificate...");
-        // await TestCreateCertificate(baseUrl, bearerToken);
-        // Console.WriteLine("CreateCertificate test passed.");
-
         Console.WriteLine("Testing ListCertificates...");
         var certs = await TestListCertificateOrders(baseUrl, apiToken, username, password);
         if (certs.Count <= 0) throw new Exception("No certificates found, please add some to run this test.");
@@ -51,8 +47,8 @@ internal abstract class Program
         Console.WriteLine(certsJson);
 
         var csrGenerator = new CsrGenerator();
-        var rsaCsrs = await csrGenerator.GenerateCsrs(5, CsrGenerator.KeyType.RSA);
-        var eccCsrs = await csrGenerator.GenerateCsrs(5, CsrGenerator.KeyType.ECC);
+        var rsaCsrs = await csrGenerator.GenerateCsrs(1, CsrGenerator.KeyType.RSA);
+        var eccCsrs = await csrGenerator.GenerateCsrs(1, CsrGenerator.KeyType.ECC);
         // var dsaCsrs = await csrGenerator.GenerateCsrs(1, CsrGenerator.KeyType.DSA);
 
         //combine the keypair lists
@@ -368,6 +364,8 @@ internal abstract class Program
             foreach (var validation in org.Validations)
                 Console.WriteLine($"Validation: {validation.Name} - {validation.Type}");
         }
+
+        var orgIds = await client.ListOrganizationsAsync(0, 1, "Markmonitor");
 
         return orgs;
     }

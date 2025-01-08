@@ -1,4 +1,5 @@
 using Newtonsoft.Json;
+using Org.BouncyCastle.Crypto;
 
 namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Models;
 
@@ -66,6 +67,15 @@ public class MarkMonitorCreateOrderRequest
     /// </summary>
     [JsonProperty("provider")]
     public string Provider { get; set; }
+
+    /// <summary>
+    /// Returns a string that represents the current object as JSON.
+    /// </summary>
+    public string JSONString()
+    {
+        var output = JsonConvert.SerializeObject(this, Formatting.Indented);
+        return output;
+    }
 }
 
 /// <summary>

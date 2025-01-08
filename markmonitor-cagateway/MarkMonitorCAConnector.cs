@@ -15,9 +15,9 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
     private readonly ILogger _logger = LogHandler.GetClassLogger<MarkMonitorCAPlugin>();
     private ICertificateDataReader _certificateDataReader;
     private MarkMonitorConfig _config;
-    MarkMonitorClient Client;
+    private MarkMonitorClient Client;
     private bool _markMonitorClientWasInjected = false;
-    
+
 
     private Dictionary<int, string> DCVTokens { get; } = new();
 
@@ -25,7 +25,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
     {
         // Explicit default constructor
     }
-    
+
     public MarkMonitorCAPlugin(MarkMonitorClient client)
     {
         Client = client;
@@ -42,7 +42,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         _logger.MethodExit();
     }
 
-    
+
     private void logConfig()
     {
         _logger.MethodEntry();
@@ -53,6 +53,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         _logger.LogInformation("MarkMonitorCAPlugin config orgName: {Config}", _config.OrgName);
         _logger.MethodExit();
     }
+
     public async Task<AnyCAPluginCertificate> GetSingleRecord(string caRequestId)
     {
         _logger.MethodEntry();
@@ -74,7 +75,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             _logger.LogInformation(fullSync
                 ? "Performing a full CA synchronization"
                 : "Performing a partial CA synchronization");
-            
+
             logConfig();
 
             _logger.LogDebug("Calling CreateAndAuthenticateClientAsync");
@@ -82,7 +83,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             _logger.LogDebug("CreateAndAuthenticateClientAsync completed");
 
             _logger.LogInformation("Attempting to synchronize certificates with MarkMonitor API");
-            var certificates = await client.GetCertificateInventoryAsync("","",100,blockingBuffer, cancelToken);
+            var certificates = await client.GetCertificateInventoryAsync("", "", 100, blockingBuffer, cancelToken);
             _logger.LogDebug("Synchronized {Certificates} certificates", certificates);
 
             // Check for cancellation after operation
@@ -144,16 +145,16 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             var client = await CreateAndAuthenticateClientAsync();
 
             _logger.LogInformation("Performing an Enrollment");
-            
-            var enrollResult = await client.EnrollCertificateAsync(csr, subject, san, productInfo.ProductID, productInfo.ProductParameters, _config);
-            
+
+            var enrollResult = await client.EnrollCertificateAsync(csr, subject, san, productInfo.ProductID,
+                productInfo.ProductParameters, _config);
+
             return enrollResult;
         }
         finally
         {
             _logger.MethodExit();
         }
-        
     }
 
     public async Task Ping()
@@ -165,9 +166,9 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             var client = await CreateAndAuthenticateClientAsync();
 
             if (client == null) throw new Exception("Error attempting to ping MarkMonitor");
-            
+
             _logger.LogInformation("Authentication with MarkMonitor API successful");
-            
+
             _logger.LogInformation("Attempting to list organizations");
             var orgs = await client.ListOrganizationsAsync();
 
@@ -197,21 +198,24 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         var apiKey = connectionInfo.TryGetValue(MarkMonitorConstants.ConfigConstants.ApiKey, out var aKey)
             ? (string)aKey
             : string.Empty;
-        if (string.IsNullOrWhiteSpace(apiKey)) errors.Add($"A valid `{MarkMonitorConstants.ConfigConstants.ApiKey} is required");
+        if (string.IsNullOrWhiteSpace(apiKey))
+            errors.Add($"A valid `{MarkMonitorConstants.ConfigConstants.ApiKey} is required");
         else _logger.LogDebug($"{MarkMonitorConstants.ConfigConstants.ApiKey} is set");
-        
+
         _logger.LogDebug("Checking the API service account password");
         var apiPassword = connectionInfo.TryGetValue(MarkMonitorConstants.ConfigConstants.ApiPassword, out var aPass)
             ? (string)aPass
             : string.Empty;
-        if (string.IsNullOrWhiteSpace(apiPassword)) errors.Add($"A valid service account `{MarkMonitorConstants.ConfigConstants.ApiPassword}` is required");
+        if (string.IsNullOrWhiteSpace(apiPassword))
+            errors.Add($"A valid service account `{MarkMonitorConstants.ConfigConstants.ApiPassword}` is required");
         else _logger.LogDebug($"{MarkMonitorConstants.ConfigConstants.ApiPassword} is set");
-        
+
         _logger.LogDebug("Checking the API service account username");
         var apiUsername = connectionInfo.TryGetValue(MarkMonitorConstants.ConfigConstants.ApiUsername, out var aUser)
             ? (string)aUser
             : string.Empty;
-        if (string.IsNullOrWhiteSpace(apiUsername)) errors.Add($"A valid service account `{MarkMonitorConstants.ConfigConstants.ApiUsername}` is required");
+        if (string.IsNullOrWhiteSpace(apiUsername))
+            errors.Add($"A valid service account `{MarkMonitorConstants.ConfigConstants.ApiUsername}` is required");
         else _logger.LogDebug($"{MarkMonitorConstants.ConfigConstants.ApiUsername} is set");
         _logger.LogTrace("MarkMonitor API Username: {Username}", apiUsername);
 
@@ -223,7 +227,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         else if (!baseURL.Contains("http")) errors.Add("The Base URL needs http:// or https://");
         else _logger.LogDebug($"{MarkMonitorConstants.ConfigConstants.BaseUrl} is set");
         _logger.LogTrace("MarkMonitor API Base URL: {BaseURL}", baseURL);
-        
+
         _logger.LogDebug("Checking the Organization Name");
         var orgName = connectionInfo.TryGetValue(MarkMonitorConstants.ConfigConstants.OrgName, out var aOrg)
             ? (string)aOrg
@@ -267,7 +271,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             _config.ApiUsername,
             _config.ApiPassword,
             true
-            );
+        );
         _logger.LogDebug("Authenticating with MarkMonitor API");
         _logger.LogTrace("MarkMonitor API Username: {Username}", _config.ApiUsername);
         await client.AuthenticateAsync();
@@ -281,4 +285,3 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         throw new AnyCAValidationException(validationMsg);
     }
 }
-

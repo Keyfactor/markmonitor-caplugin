@@ -28,7 +28,7 @@ public class MarkMonitorCAPluginConfig
                 Comments = "The API Key for the MarkMonitor API",
                 Hidden = true,
                 DefaultValue = "",
-                Type = "String",
+                Type = "String"
             },
             [ConfigConstants.ApiUsername] = new()
             {
@@ -95,7 +95,7 @@ public class MarkMonitorCAPluginConfig
                 Hidden = false,
                 DefaultValue = "",
                 Type = "String"
-            },
+            }
             // [EnrollmentConfigConstants.OrganizationAddress] = new()
             // {
             //     Comments = "Address of the organization to be validated against",
@@ -170,21 +170,20 @@ public class MarkMonitorCAPluginConfig
 
     public class Config
     {
-        [JsonProperty(ConfigConstants.ApiKey)]
-        public string ApiKey { get; set; }
-        
+        [JsonProperty(ConfigConstants.ApiKey)] public string ApiKey { get; set; }
+
         [JsonProperty(ConfigConstants.ApiPassword)]
         public string ApiPassword { get; set; }
-        
+
         [JsonProperty(ConfigConstants.ApiUsername)]
         public string ApiUsername { get; set; }
-        
+
         [JsonProperty(ConfigConstants.BaseUrl)]
         public string BaseUrl { get; set; }
-        
+
         [JsonProperty(ConfigConstants.OrgName)]
         public string OrgName { get; set; }
-        
+
         [JsonProperty(ConfigConstants.Enabled)]
         public bool Enabled { get; set; }
     }

@@ -39,10 +39,6 @@
       ],
       "enrollment_config": [
         {
-          "name": "CertificateLifetimeDays",
-          "description": "The desired lifetime, in days, of the issued certificate. Used by MarkMonitor to create the `not_before_time` and `not_after_time` fields in the signed X.509 certificate. If the lifetime extends past the life of any CA in the issuing chain, this value will be truncated."
-        },
-        {
           "name": "AdditionalEmails",
           "description": "List of 0 or more comma separated email addresses to send the certificate to via email after generation."
         },
@@ -53,10 +49,6 @@
         {
           "name": "MarkMonitorContact",
           "description": "The name or GUID of a MarkMonitor contact to use for the certificate request."
-        },
-        {
-          "name": "OrganizationName",
-          "description": "Name of the organization to be validated against"
         },
         {
           "name": "DCVMethod",

@@ -1,5 +1,5 @@
 <h1 align="center" style="border-bottom: none">
-    MarkMonitor   Gateway AnyCA Gateway REST Plugin
+    Markmonitor   Gateway AnyCA Gateway REST Plugin
 </h1>
 
 <p align="center">
@@ -38,10 +38,10 @@ TODO Overview is a required section
 
 ## Compatibility
 
-The MarkMonitor   Gateway AnyCA Gateway REST plugin is compatible with the Keyfactor AnyCA Gateway REST 24.2.0 and later.
+The Markmonitor   Gateway AnyCA Gateway REST plugin is compatible with the Keyfactor AnyCA Gateway REST 24.2.0 and later.
 
 ## Support
-The MarkMonitor   Gateway AnyCA Gateway REST plugin is supported by Keyfactor for Keyfactor customers. If you have a support issue, please open a support ticket with your Keyfactor representative. If you have a support issue, please open a support ticket via the Keyfactor Support Portal at https://support.keyfactor.com. 
+The Markmonitor   Gateway AnyCA Gateway REST plugin is supported by Keyfactor for Keyfactor customers. If you have a support issue, please open a support ticket with your Keyfactor representative. If you have a support issue, please open a support ticket via the Keyfactor Support Portal at https://support.keyfactor.com. 
 
 > To report a problem or suggest a new feature, use the **[Issues](../../issues)** tab. If you want to contribute actual bug fixes or proposed enhancements, use the **[Pull requests](../../pulls)** tab.
 
@@ -55,7 +55,7 @@ The MarkMonitor   Gateway AnyCA Gateway REST plugin is supported by Keyfactor fo
 
 1. Install the AnyCA Gateway REST per the [official Keyfactor documentation](https://software.keyfactor.com/Guides/AnyCAGatewayREST/Content/AnyCAGatewayREST/InstallIntroduction.htm).
 
-2. On the server hosting the AnyCA Gateway REST, download and unzip the latest [MarkMonitor   Gateway AnyCA Gateway REST plugin](https://github.com/Keyfactor/markmonitor-cagateway/releases/latest) from GitHub.
+2. On the server hosting the AnyCA Gateway REST, download and unzip the latest [Markmonitor   Gateway AnyCA Gateway REST plugin](https://github.com/Keyfactor/markmonitor-cagateway/releases/latest) from GitHub.
 
 3. Copy the unzipped directory (usually called `net6.0`) to the Extensions directory:
 
@@ -63,11 +63,11 @@ The MarkMonitor   Gateway AnyCA Gateway REST plugin is supported by Keyfactor fo
     Program Files\Keyfactor\AnyCA Gateway\AnyGatewayREST\net6.0\Extensions
     ```
 
-    > The directory containing the MarkMonitor   Gateway AnyCA Gateway REST plugin DLLs (`net6.0`) can be named anything, as long as it is unique within the `Extensions` directory.
+    > The directory containing the Markmonitor   Gateway AnyCA Gateway REST plugin DLLs (`net6.0`) can be named anything, as long as it is unique within the `Extensions` directory.
 
 4. Restart the AnyCA Gateway REST service.
 
-5. Navigate to the AnyCA Gateway REST portal and verify that the Gateway recognizes the MarkMonitor   Gateway plugin by hovering over the ⓘ symbol to the right of the Gateway on the top left of the portal.
+5. Navigate to the AnyCA Gateway REST portal and verify that the Gateway recognizes the Markmonitor   Gateway plugin by hovering over the ⓘ symbol to the right of the Gateway on the top left of the portal.
 
 ## Configuration
 

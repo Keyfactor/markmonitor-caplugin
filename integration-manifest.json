@@ -1,74 +1,70 @@
 {
-  "$schema": "https://keyfactor.github.io/integration-manifest-schema.json",
-  "integration_type": "anyca-plugin",
-  "name": "Markmonitor AnyCA REST Gateway Plugin",
-  "status": "pilot",
-  "support_level": "kf-supported",
-  "link_github": true,
-  "update_catalog": true,
-  "description": "Markmonitor plugin for the AnyCA REST Gateway framework",
-  "gateway_framework": "24.2.0",
-  "release_dir": "markmonitor-cagateway/bin/Release/net6.0",
-  "about": {
-    "carest": {
-      "ca_plugin_config": [
-        {
-          "name": "ApiKey",
-          "description": "The API Key for the Markmonitor API"
-        },
-        {
-          "name": "Username",
-          "description": "Username for the Markmonitor API service account"
-        },
-        {
-          "name": "Password",
-          "description": "Password for the Markmonitor API service account"
-        },
-        {
-          "name": "BaseUrl",
-          "description": "The Base URL for the Markmonitor API - Usually either https://api.markmonitor.com"
-        },
-        {
-          "name": "OrgId",
-          "description": "The name or GUID of the Markmonitor Organization to use for the API calls (ex: Markmonitor)"
-        },
-        {
-          "name": "Enabled",
-          "description": "Flag to Enable or Disable gateway functionality. Disabling is primarily used to allow creation of the CA prior to configuration information being available."
+    "$schema": "https://keyfactor.github.io/integration-manifest-schema.json",
+    "integration_type": "anyca-plugin",
+    "name": "Markmonitor AnyCA REST Gateway Plugin",
+    "status": "pilot",
+    "support_level": "kf-supported",
+    "link_github": true,
+    "update_catalog": true,
+    "description": "Markmonitor plugin for the AnyCA REST Gateway framework",
+    "gateway_framework": "24.2.0",
+    "release_dir": "markmonitor-cagateway/bin/Release/net6.0",
+    "about": {
+        "carest": {
+            "ca_plugin_config": [
+                {
+                    "name": "ApiKey",
+                    "description": "The API Key for the MarkMonitor API"
+                },
+                {
+                    "name": "Username",
+                    "description": "Username for the MarkMonitor API service account"
+                },
+                {
+                    "name": "Password",
+                    "description": "Password for the MarkMonitor API service account"
+                },
+                {
+                    "name": "BaseUrl",
+                    "description": "The Base URL for the MarkMonitor API - Usually either https://api.markmonitor.com"
+                },
+                {
+                    "name": "OrgId",
+                    "description": "The name of the MarkMonitor Organization to use for the API calls (ex: MarkMonitor). You can also use the Organization ID in GUID format."
+                },
+                {
+                    "name": "Enabled",
+                    "description": "Flag to Enable or Disable gateway functionality. Disabling is primarily used to allow creation of the CA prior to configuration information being available."
+                }
+            ],
+            "enrollment_config": [
+                {
+                    "name": "CertificateValidityInYears",
+                    "description": "Number of years the certificate will be valid for"
+                },
+                {
+                    "name": "Email",
+                    "description": "Email address of the requestor"
+                },
+                {
+                    "name": "OrganizationName",
+                    "description": "Name of the organization to be validated against"
+                }
+            ],
+            "product_ids": [
+                "SslOvBasic",
+                "SslEvBasic",
+                "SslDvGeotrust",
+                "SslDvThawte",
+                "SslOvThawteWebserver",
+                "SslEvThawteWebserver",
+                "SslOvGeotrustTruebizid",
+                "SslEvGeotrustTruebizid",
+                "SslOvSecuresite",
+                "SslEvSecuresite",
+                "SslOvSecuresitePro",
+                "SslEvSecuresitePro"
+            ]
         }
-      ],
-      "enrollment_config": [
-        {
-          "name": "AdditionalEmails",
-          "description": "List of 0 or more comma separated email addresses to send the certificate to via email after generation."
-        },
-        {
-          "name": "MarkmonitorGroup",
-          "description": "(Optional) The name or GUID of a Markmonitor group to use for the certificate request."
-        },
-        {
-          "name": "MarkmonitorContact",
-          "description": "The name or GUID of a Markmonitor contact to use for the certificate request. Will use default Markmonitor organization contact if not specified."
-        },
-        {
-          "name": "DCVMethod",
-          "description": "The method to use for Domain Control Validation (DCV). Valid values are EMAIL, DNS, or HTTP. Default is `EMAIL`."
-        }
-      ],
-      "product_ids": [
-        "SslOvBasic",
-        "SslEvBasic",
-        "SslDvGeotrust",
-        "SslDvThawte",
-        "SslOvThawteWebserver",
-        "SslEvThawteWebserver",
-        "SslOvGeotrustTruebizid",
-        "SslEvGeotrustTruebizid",
-        "SslOvSecuresite",
-        "SslEvSecuresite",
-        "SslOvSecuresitePro",
-        "SslEvSecuresitePro"
-      ]
     }
-  }
 }

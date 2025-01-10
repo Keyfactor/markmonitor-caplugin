@@ -47,7 +47,9 @@ The MarkMonitor   Gateway AnyCA Gateway REST plugin is supported by Keyfactor fo
 
 ## Requirements
 
-TODO Requirements is a required section
+- MarkMonitor API Key (contact MarkMonitor support for this)
+- MarkMonitor Service Account (username and password) w/ permission to create certificate orders
+- Keyfactor Command >= v12.0.0
 
 ## Installation
 

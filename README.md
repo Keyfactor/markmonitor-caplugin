@@ -34,7 +34,7 @@
 </p>
 
 
-TODO Overview is a required section
+
 
 ## Compatibility
 
@@ -47,8 +47,8 @@ The Markmonitor   Gateway AnyCA Gateway REST plugin is supported by Keyfactor fo
 
 ## Requirements
 
-- MarkMonitor API Key (contact MarkMonitor support for this)
-- MarkMonitor Service Account (username and password) w/ permission to create certificate orders
+- Markmonitor API Key (contact Markmonitor support for this)
+- Markmonitor Service Account (username and password) w/ permission to create certificate orders
 - Keyfactor Command >= v12.0.0
 
 ## Installation
@@ -75,7 +75,19 @@ The Markmonitor   Gateway AnyCA Gateway REST plugin is supported by Keyfactor fo
 
     * **Gateway Registration**
 
-        TODO Gateway Registration is a required section
+        In order to enroll for certificates the Keyfactor Command server must trust the trust chain. Markmonitor's default 
+        issuing CA (provider) is DigiCert, make sure to download and import the appropriate certificate chain from 
+        https://www.digicert.com/kb/digicert-root-certificates.htm to the AnyCA Gateway host.
+
+        Once the necessary files are copied to the appropriate locations and the AnyCA Gateway Rest is up and running, navigate 
+        to the AnyCA Gateway Rest portal and configure the CA.
+
+        ### Using file path for issuing CA certificate
+        ![gateway_registration.png](images/gateway_registration.png)
+
+        ### Using Keyfactor Command certificate store for issuing CA certificate
+        > **⚠️ Warning:** The cert store must already exist in the Keyfactor Command.
+        ![gateway_registration_store.png](images/gateway_registration_store.png)
 
     * **CA Connection**
 
@@ -88,12 +100,28 @@ The Markmonitor   Gateway AnyCA Gateway REST plugin is supported by Keyfactor fo
         * **OrgId** - The name of the MarkMonitor Organization to use for the API calls (ex: MarkMonitor). You can also use the Organization ID in GUID format. 
         * **Enabled** - Flag to Enable or Disable gateway functionality. Disabling is primarily used to allow creation of the CA prior to configuration information being available. 
 
-2. TODO Certificate Template Creation Step is an optional section. If this section doesn't seem necessary on initial glance, please delete it. Refer to the docs on [Confluence](https://keyfactor.atlassian.net/wiki/x/SAAyHg) for more info
+2. A template must be created in Keyfactor Command to be used for certificate enrollment. One template is required for each
+    certificate product type supported by Markmonitor. Below is an example of a template for a `GeoTrust DV SSL certificate`.
+    For more on certificate product types contact your Markmonitor administrator or support.
+    ![gateway_template.png](images/gateway_template.png)
 
 3. Follow the [official Keyfactor documentation](https://software.keyfactor.com/Guides/AnyCAGatewayREST/Content/AnyCAGatewayREST/AddCA-Keyfactor.htm) to add each defined Certificate Authority to Keyfactor Command and import the newly defined Certificate Templates.
 
-4. TODO Custom Enrollment Parameter Creation Step is an optional section. If this section doesn't seem necessary on initial glance, please delete it. Refer to the docs on [Confluence](https://keyfactor.atlassian.net/wiki/x/SAAyHg) for more info
+4. Custom enrollment parameters can be added to templates in Keyfactor Command after they have been imported from the AnyCA 
+    Gateway. All parameters are optional. Valid parameters:
 
+    | Parameter Name     | Description | Type |
+    |--------------------|------------|------|
+    | `AdditionalEmails` | List of 0 or more comma separated email addresses to send the certificate to via email after generation. | String |
+    | `MarkmonitorGroup` | The name or GUID of a Markmonitor group to use for the certificate request. | String |
+    | `MarkmonitorContact`| The name or GUID of a Markmonitor contact to use for the certificate request. Will use default Markmonitor organization contact if not specified. | String |
+    | `DCVMethod`        | The method to use for Domain Control Validation (DCV). Valid values are `EMAIL, DNS_CNAME_TOKEN, HTTP_TOKEN, DNS_TXT_TOKEN`. Default is `EMAIL`. | String |
+
+    ![template_enrollment_params.png](images/template_enrollment_params.png)
+
+
+## CA Connection Configuration
+![gateway_ca_configuration.png](images/gateway_ca_configuration.png)
 
 
 ## License

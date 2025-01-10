@@ -83,11 +83,11 @@ The Markmonitor   Gateway AnyCA Gateway REST plugin is supported by Keyfactor fo
         to the AnyCA Gateway Rest portal and configure the CA.
 
         ### Using file path for issuing CA certificate
-        ![gateway_registration.png](images/gateway_registration.png)
+        ![gateway_registration.png](docsource/images/gateway_registration.png)
 
         ### Using Keyfactor Command certificate store for issuing CA certificate
         > **⚠️ Warning:** The cert store must already exist in the Keyfactor Command.
-        ![gateway_registration_store.png](images/gateway_registration_store.png)
+        ![gateway_registration_store.png](docsource/images/gateway_registration_store.png)
 
     * **CA Connection**
 
@@ -103,7 +103,7 @@ The Markmonitor   Gateway AnyCA Gateway REST plugin is supported by Keyfactor fo
 2. A template must be created in Keyfactor Command to be used for certificate enrollment. One template is required for each
     certificate product type supported by Markmonitor. Below is an example of a template for a `GeoTrust DV SSL certificate`.
     For more on certificate product types contact your Markmonitor administrator or support.
-    ![gateway_template.png](images/gateway_template.png)
+    ![gateway_template.png](docsource/images/gateway_template.png)
 
 3. Follow the [official Keyfactor documentation](https://software.keyfactor.com/Guides/AnyCAGatewayREST/Content/AnyCAGatewayREST/AddCA-Keyfactor.htm) to add each defined Certificate Authority to Keyfactor Command and import the newly defined Certificate Templates.
 
@@ -117,11 +117,11 @@ The Markmonitor   Gateway AnyCA Gateway REST plugin is supported by Keyfactor fo
     | `MarkmonitorContact`| The name or GUID of a Markmonitor contact to use for the certificate request. Will use default Markmonitor organization contact if not specified. | String |
     | `DCVMethod`        | The method to use for Domain Control Validation (DCV). Valid values are `EMAIL, DNS_CNAME_TOKEN, HTTP_TOKEN, DNS_TXT_TOKEN`. Default is `EMAIL`. | String |
 
-    ![template_enrollment_params.png](images/template_enrollment_params.png)
+    ![template_enrollment_params.png](docsource/images/template_enrollment_params.png)
 
 
 ## CA Connection Configuration
-![gateway_ca_configuration.png](images/gateway_ca_configuration.png)
+![gateway_ca_configuration.png](docsource/images/gateway_ca_configuration.png)
 
 
 ## License

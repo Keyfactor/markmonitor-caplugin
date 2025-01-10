@@ -52,7 +52,7 @@
         },
         {
           "name": "DCVMethod",
-          "description": "The method to use for Domain Control Validation (DCV). Valid values are EMAIL, DNS, or HTTP. Default is `EMAIL`."
+          "description": "The method to use for Domain Control Validation (DCV). Valid values are `EMAIL, DNS_CNAME_TOKEN, HTTP_TOKEN, DNS_TXT_TOKEN`. Default is `EMAIL`."
         }
       ],
       "product_ids": [

@@ -4,7 +4,9 @@ TODO Overview is a required section
 
 ## Requirements
 
-TODO Requirements is a required section
+- MarkMonitor API Key (contact MarkMonitor support for this)
+- MarkMonitor Service Account (username and password) w/ permission to create certificate orders
+- Keyfactor Command >= v12.0.0
 
 ## Gateway Registration
 

@@ -499,7 +499,6 @@ public class MarkMonitorClient
             var cnEnd = subject.IndexOf(",", cnStart, StringComparison.Ordinal);
             if (cnEnd < 0) cnEnd = subject.Length;
             return subject.Substring(cnStart, cnEnd - cnStart);
-
         }
         finally
         {
@@ -758,10 +757,13 @@ public class MarkMonitorClient
             order.Status.Equals(OrderStatus.DigiReissuePending.GetDescription(), StringComparison.OrdinalIgnoreCase) ||
             order.Status.Equals(OrderStatus.DigiWaitingPickup.GetDescription(), StringComparison.OrdinalIgnoreCase) ||
             order.Status.Equals(OrderStatus.ReissuePending.GetDescription(), StringComparison.OrdinalIgnoreCase) ||
+            order.Status.Equals(OrderStatus.DigiNeedsApproval.GetDescription(), StringComparison.OrdinalIgnoreCase) ||
             order.Status.Equals(OrderStatus.ReissueRequestPending.GetDescription(), StringComparison.OrdinalIgnoreCase)
         )
         {
             _logger.LogInformation("MarkMonitor order {OrderId} status 'IN PROCESS'", order.Id);
+            _logger.LogInformation(
+                "MarkMonitor order {OrderId} may still be in process and/or require manual intervention", order.Id);
             return (int)EndEntityStatus.INPROCESS;
         }
 
@@ -812,12 +814,14 @@ public class MarkMonitorClient
         )
         {
             _logger.LogInformation("MarkMonitor order {OrderId} status 'INITIALIZED'", order.Id);
-            _logger.LogInformation("MarkMonitor order {OrderId} may still be in process and/or require manual intervention", order.Id);
+            _logger.LogInformation(
+                "MarkMonitor order {OrderId} may still be in process and/or require manual intervention", order.Id);
             _logger.MethodExit();
             return (int)EndEntityStatus.INITIALIZED;
         }
 
-        _logger.LogError("MarkMonitor order {OrderId} status could not be dettermined defaulting to 'FAILED'", order.Id);
+        _logger.LogError("MarkMonitor order {OrderId} status could not be dettermined defaulting to 'FAILED'",
+            order.Id);
         _logger.MethodExit();
         return (int)EndEntityStatus.FAILED;
     }

@@ -1,10 +1,10 @@
 # Enrolling Certificates Using the MarkMonitor AnyCA Gateway
 This will guide you through the process of enrolling certificates using the Markmonitor AnyCA Gateway in Keyfactor Command.
 
-> !IMPORTANT:
+> [!IMPORTANT]
 > THIS DOCUMENTATION IS NOT MEANT FOR END USERS. It is meant for Keyfactor internal testing.
 
-> !IMPORTANT:
+> [!IMPORTANT]
 > Enrollments will FAIL due to the fact that email verification is required to complete the cert order flow. Once approved, 
 > the certificate will be available in Keyfactor Command on the next incremental CA sync.
 
@@ -13,7 +13,7 @@ Example PFX Enrollment
 
 ![enroll_pfx.png](images/enroll_pfx.png)
 
-> !IMPORTANT:
+> [!IMPORTANT]
 > Enrollments will FAIL due to the fact that email verification is required to complete the cert order flow. Once approved,
 > the certificate will be available in Keyfactor Command on the next incremental CA sync.
 
@@ -25,11 +25,11 @@ Example PFX Enrollment
 ![csr_generate.png](images/csr_generate.png)
 
 #### Enroll CSR
-> !IMPORTANT:
+> [!IMPORTANT]
 > The `common name` must be `<something>.mmcertdomain.com` of the request will be rejected by Markmonitor.
 ![enroll_csr.png](images/enroll_csr.png)
 
-> !IMPORTANT:
+> [!IMPORTANT]
 > Enrollments will FAIL due to the fact that email verification is required to complete the cert order flow. Once approved,
 > the certificate will be available in Keyfactor Command on the next incremental CA sync.
 
@@ -55,7 +55,7 @@ https://corp.markmonitor.com/login/extjs/index.html
 Due to the way MarkMonitor set up Keyfactor for testing, the certificate approvals will need to be done manually 
 through email verifications.
 
-> !IMPORTANT:
+> [!IMPORTANT]
 > Currently only sean.bailey@keyfactor.com is set up to receive the email approvals.
 
 ![approval_email.png](images/approval_email.png)

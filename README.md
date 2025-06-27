@@ -50,6 +50,7 @@ The Markmonitor   Gateway AnyCA Gateway REST plugin is supported by Keyfactor fo
 - Markmonitor API Key (contact Markmonitor support for this)
 - Markmonitor Service Account (username and password) w/ permission to create certificate orders
 - Keyfactor Command >= v12.0.0
+- AnyCA Gateway REST Portal >= v24.2.0
 
 ## Installation
 
@@ -83,7 +84,7 @@ The Markmonitor   Gateway AnyCA Gateway REST plugin is supported by Keyfactor fo
         to the AnyCA Gateway Rest portal and configure the CA.
 
         ### Using file path for issuing CA certificate
-        ![gateway_registration.png](docsource/images/gateway_registration_local_file.png)
+        ![gateway_registration_local_file.png](docsource/images/gateway_registration_local_file.png)
 
         ### Using Keyfactor Command certificate store for issuing CA certificate
         > **⚠️ Warning:** The cert store must already exist in the Keyfactor Command.

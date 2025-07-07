@@ -1,47 +1,70 @@
 {
-  "$schema": "https://keyfactor.github.io/integration-manifest-schema.json",
-  "integration_type": "anyca-plugin",
-  "name": "MarkMonitor AnyCA REST Gateway Plugin",
-  "status": "pilot",
-  "support_level": "kf-supported",
-  "link_github": true,
-  "update_catalog": true,
-  "description": "MarkMonitor plugin for the AnyCA REST Gateway framework",
-  "gateway_framework": "24.2.0",
-  "release_dir": "markmonitor-cagateway/bin/Release/net6.0",
-  "about": {
-    "carest": {
-      "ca_plugin_config": [
-        {
-          "name": "ClientSecret",
-          "description": "Client Secret for Generating Bearer Token"
-        },
-        {
-          "name": "MarkMonitorApiClient",
-          "description": "MarkMonitor API Client Name"
-        },
-        {
-          "name": "BaseUrl",
-          "description": "Base Url for MarkMonitor API such as https://url:8443"
-        },
-        {
-          "name": "MarkMonitorCaId",
-          "description": "MarkMonitor Ca Id.  Example would be 2. In MarkMonitor Onboard UI, click edit on the Ca and look at the id in the Url."
+    "$schema": "https://keyfactor.github.io/integration-manifest-schema.json",
+    "integration_type": "anyca-plugin",
+    "name": "Markmonitor AnyCA REST Gateway Plugin",
+    "status": "pilot",
+    "support_level": "kf-supported",
+    "link_github": true,
+    "update_catalog": true,
+    "description": "Markmonitor plugin for the AnyCA REST Gateway framework",
+    "gateway_framework": "24.2.0",
+    "release_dir": "markmonitor-cagateway/bin/Release/net6.0",
+    "about": {
+        "carest": {
+            "ca_plugin_config": [
+                {
+                    "name": "ApiKey",
+                    "description": "The API Key for the MarkMonitor API"
+                },
+                {
+                    "name": "Username",
+                    "description": "Username for the MarkMonitor API service account"
+                },
+                {
+                    "name": "Password",
+                    "description": "Password for the MarkMonitor API service account"
+                },
+                {
+                    "name": "BaseUrl",
+                    "description": "The Base URL for the MarkMonitor API - Usually either https://api.markmonitor.com"
+                },
+                {
+                    "name": "OrgId",
+                    "description": "The name of the MarkMonitor Organization to use for the API calls (ex: MarkMonitor). You can also use the Organization ID in GUID format."
+                },
+                {
+                    "name": "Enabled",
+                    "description": "Flag to Enable or Disable gateway functionality. Disabling is primarily used to allow creation of the CA prior to configuration information being available."
+                }
+            ],
+            "enrollment_config": [
+                {
+                    "name": "CertificateValidityInYears",
+                    "description": "Number of years the certificate will be valid for"
+                },
+                {
+                    "name": "Email",
+                    "description": "Email address of the requestor"
+                },
+                {
+                    "name": "OrganizationName",
+                    "description": "Name of the organization to be validated against"
+                }
+            ],
+            "product_ids": [
+                "SslOvBasic",
+                "SslEvBasic",
+                "SslDvGeotrust",
+                "SslDvThawte",
+                "SslOvThawteWebserver",
+                "SslEvThawteWebserver",
+                "SslOvGeotrustTruebizid",
+                "SslEvGeotrustTruebizid",
+                "SslOvSecuresite",
+                "SslEvSecuresite",
+                "SslOvSecuresitePro",
+                "SslEvSecuresitePro"
+            ]
         }
-      ],
-      "enrollment_config": [
-        {
-          "name": "NumberOfDaysValid",
-          "description": "OPTIONAL: The number of days of validity to use when requesting certs. If not provided, default is 365."
-        }
-      ],
-      "product_ids": [
-        "ca",
-        "code-signing",
-        "https",
-        "tls-client",
-        "trusted"
-      ]
     }
-  }
 }

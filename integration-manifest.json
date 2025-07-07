@@ -8,7 +8,8 @@
     "update_catalog": true,
     "description": "Markmonitor plugin for the AnyCA REST Gateway framework",
     "gateway_framework": "24.2.0",
-    "release_dir": "markmonitor-cagateway/bin/Release/net6.0",
+    "release_dir": "markmonitor-cagateway/bin/Release",
+    "release_project": "markmonitor-cagateway/markmonitor-cagateway.csproj",
     "about": {
         "carest": {
             "ca_plugin_config": [

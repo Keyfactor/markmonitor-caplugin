@@ -1,4 +1,18 @@
-﻿using System.Collections.Concurrent;
+﻿// Copyright 2025 Keyfactor
+// 
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+// 
+//     http://www.apache.org/licenses/LICENSE-2.0
+// 
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+using System.Collections.Concurrent;
 using Keyfactor.AnyGateway.Extensions;
 using Keyfactor.Extensions.CAPlugin.MarkMonitor.Client;
 using Keyfactor.Extensions.CAPlugin.MarkMonitor.Models;
@@ -38,7 +52,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         _certificateDataReader = certificateDataReader;
         var rawConfig = JsonConvert.SerializeObject(configProvider.CAConnectionData);
         _config = JsonConvert.DeserializeObject<MarkMonitorConfig>(rawConfig);
-        _logger.LogTrace("MarkMonitorCAPlugin initialized with config: {Config}", rawConfig);
+        // _logger.LogTrace("MarkMonitorCAPlugin initialized with config: {Config}", rawConfig);
         _logger.MethodExit();
     }
 
@@ -47,9 +61,34 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
     {
         _logger.MethodEntry();
         _logger.LogInformation("MarkMonitorCAPlugin config baseUrl: {Config}", _config.BaseUrl);
-        _logger.LogInformation("MarkMonitorCAPlugin config apiKey: {Config}", _config.ApiKey);
-        _logger.LogInformation("MarkMonitorCAPlugin config apiUsername: {Config}", _config.ApiUsername);
-        _logger.LogInformation("MarkMonitorCAPlugin config apiPassword: {Config}", _config.ApiPassword);
+        // _logger.LogInformation("MarkMonitorCAPlugin config apiKey: {Config}", _config.ApiKey);
+        if (_config.ApiKey is { Length: > 0 })
+        {
+            _logger.LogInformation("MarkMonitorCAPlugin config apiKey: {Config}", new string('*', 32));
+        }
+        else
+        {
+            _logger.LogError("MarkMonitorCAPlugin config apiKey: NOT SET");
+        }
+        // _logger.LogInformation("MarkMonitorCAPlugin config apiUsername: {Config}", _config.ApiUsername);
+        if (_config.ApiUsername is { Length: > 0 })
+        {
+            _logger.LogInformation("MarkMonitorCAPlugin config apiUsername: {Config}", new string('*', 32));
+        }
+        else
+        {
+            _logger.LogError("MarkMonitorCAPlugin config apiUsername: NOT SET");
+        }
+        // _logger.LogInformation("MarkMonitorCAPlugin config apiPassword: {Config}", _config.ApiPassword);
+        if (_config.ApiPassword is { Length: > 0 })
+        {
+            _logger.LogInformation("MarkMonitorCAPlugin config apiPassword: {Config}", new string('*', 32));
+        }
+        else
+        {
+            _logger.LogError("MarkMonitorCAPlugin config apiPassword: NOT SET");
+        }
+        
         _logger.LogInformation("MarkMonitorCAPlugin config orgName: {Config}", _config.OrgName);
         _logger.MethodExit();
     }
@@ -57,12 +96,19 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
     public async Task<AnyCAPluginCertificate> GetSingleRecord(string caRequestId)
     {
         _logger.MethodEntry();
-        var client = await CreateAndAuthenticateClientAsync();
-        _logger.LogInformation("Getting order details for CARequestID: {CARequestID}", caRequestId);
-        var order = await client.GetSingleOrderAsync(caRequestId);
-        _logger.LogInformation("Order details retrieved for CARequestID: {CARequestID}", caRequestId);
-        _logger.MethodExit();
-        return order;
+        try
+        {
+            var client = await CreateAndAuthenticateClientAsync();
+            _logger.LogInformation("Getting order details for CARequestID: {CARequestID}", caRequestId);
+            var order = await client.GetSingleOrderAsync(caRequestId);
+            _logger.LogInformation("Order details retrieved for CARequestID: {CARequestID}", caRequestId);
+            return order;
+        }
+        finally
+        {
+            _logger.MethodExit();
+        }
+        
     }
 
     public async Task Synchronize(BlockingCollection<AnyCAPluginCertificate> blockingBuffer, DateTime? lastSync,
@@ -126,7 +172,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         }
         catch (Exception e)
         {
-            throw new Exception($"Revoke Failed with message {e?.Message}");
+            throw new Exception($"Revoke Failed with message {e.Message}");
         }
         finally
         {
@@ -145,10 +191,22 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             var client = await CreateAndAuthenticateClientAsync();
 
             _logger.LogInformation("Performing an Enrollment");
+            _logger.LogTrace("CSR: {Csr}", csr);
+            _logger.LogTrace("Subject: {Subject}", subject);
+            _logger.LogTrace("SAN: {San}", JsonConvert.SerializeObject(san));
+            _logger.LogTrace("Product ID: {ProductId}", productInfo.ProductID);
 
             var enrollResult = await client.EnrollCertificateAsync(csr, subject, san, productInfo.ProductID,
                 productInfo.ProductParameters, _config);
 
+            if (enrollResult == null)
+            {
+                _logger.LogError("Enrollment failed for subject: {Subject}", subject);
+                throw new Exception($"Enrollment failed for subject: {subject}");
+            }
+            _logger.LogTrace("Enrollment result: {EnrollResult}", JsonConvert.SerializeObject(enrollResult));
+            _logger.LogInformation("Enrollment completed successfully for subject: {Subject}", subject);
+            
             return enrollResult;
         }
         finally
@@ -242,46 +300,86 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
 
     public Task ValidateProductInfo(EnrollmentProductInfo productInfo, Dictionary<string, object> connectionInfo)
     {
-        _logger.LogInformation("Product Info validated successfully");
+        _logger.MethodEntry();
+        _logger.LogInformation("Product info validated successfully");
+        _logger.MethodExit();
         return Task.CompletedTask;
     }
 
     public Dictionary<string, PropertyConfigInfo> GetCAConnectorAnnotations()
     {
-        return MarkMonitorConstants.GetPluginAnnotations();
+        _logger.MethodEntry();
+        try
+        {
+            _logger.LogInformation("Retrieving CA Connector annotations");
+            return MarkMonitorConstants.GetPluginAnnotations();
+        }
+        finally
+        {
+            _logger.MethodExit();   
+        }
+        
     }
 
     public Dictionary<string, PropertyConfigInfo> GetTemplateParameterAnnotations()
     {
-        return MarkMonitorConstants.GetTemplateParameterAnnotations();
+        _logger.MethodEntry();
+        try
+        {
+            _logger.LogInformation("Retrieving template parameter annotations");
+            return MarkMonitorConstants.GetTemplateParameterAnnotations();    
+        }
+        finally
+        {
+            _logger.MethodExit();
+        }
+        
     }
 
     public List<string> GetProductIds()
     {
         // return list of CertOrderTypes Enum values
-        return Enum.GetNames(typeof(CertOrderTypes)).ToList();
+        _logger.MethodEntry();
+        try
+        {
+            _logger.LogInformation("Retrieving product IDs from CertOrderTypes Enum");
+            return Enum.GetNames(typeof(CertOrderTypes)).ToList();    
+        } 
+        finally
+        {
+            _logger.MethodExit();
+        }
+        
     }
 
     private async Task<MarkMonitorClient> CreateAndAuthenticateClientAsync()
     {
         _logger.MethodEntry();
-        var client = new MarkMonitorClient(
-            _config.BaseUrl,
-            _config.ApiKey,
-            _config.ApiUsername,
-            _config.ApiPassword,
-            true
-        );
-        _logger.LogDebug("Authenticating with MarkMonitor API");
-        _logger.LogTrace("MarkMonitor API Username: {Username}", _config.ApiUsername);
-        await client.AuthenticateAsync();
-        _logger.MethodExit();
-        return client;
+        try
+        {
+            var client = new MarkMonitorClient(
+                _config.BaseUrl,
+                _config.ApiKey,
+                _config.ApiUsername,
+                _config.ApiPassword,
+                true
+            );
+            _logger.LogDebug("Authenticating with MarkMonitor API");
+            _logger.LogTrace("MarkMonitor API Username: {Username}", _config.ApiUsername);
+            await client.AuthenticateAsync();
+            return client;
+        }
+        finally
+        {
+            _logger.MethodExit();
+        }
     }
 
     private void ThrowValidationException(List<string> errors)
     {
+        _logger.MethodEntry();
         var validationMsg = $"Validation errors:\n{string.Join("\n", errors)}";
+        _logger.LogError("{Errors}",validationMsg);
         throw new AnyCAValidationException(validationMsg);
     }
 }

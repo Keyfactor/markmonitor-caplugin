@@ -133,11 +133,24 @@ public enum CertServerPlatforms
     [Description("MICROSOFT_IIS_5_OR_6")] MicrosoftIis5Or6
 }
 
+public enum DomainControlValidationMethods
+{
+    //EMAIL, DNS_CNAME_TOKEN, HTTP_TOKEN, DNS_TXT_TOKEN
+    [Description("EMAIL")] Email,
+
+    [Description("DNS_CNAME_TOKEN")] DnsCNameToken,
+
+    [Description("HTTP_TOKEN")] HttpToken,
+
+    [Description("DNS_TXT_TOKEN")] DnsTxtToken
+}
+
 public static class EnumExtensions
 {
     public static string GetDescription(this Enum value)
     {
         var field = value.GetType().GetField(value.ToString());
+        if (field == null) return "";
         var attribute = field.GetCustomAttribute<DescriptionAttribute>();
         return attribute?.Description ?? value.ToString();
     }

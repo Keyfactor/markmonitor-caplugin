@@ -152,15 +152,37 @@ public class MarkMonitorClient
                     _logger.LogDebug("Certificate {CertificateId} is revoked", certificateDetail.Id);
                     revocationDate = Convert.ToDateTime(certificateDetail.Cert.DateValidUntil);
                 }
+                
+                var fullChain = new StringBuilder();
+                if (certificateDetail.Cert.EndEntityCert != null)
+                {
+                    _logger.LogDebug("Adding end entity certificate to full chain for {CertificateId}",
+                        certificateDetail.Id);
+                    fullChain.AppendLine(certificateDetail.Cert.EndEntityCert);
+                }
+                if (certificateDetail.Cert.IntermediateCert != null)
+                {
+                    _logger.LogDebug("Adding issuer certificate to full chain for {CertificateId}",
+                        certificateDetail.Id);
+                    fullChain.AppendLine(certificateDetail.Cert.IntermediateCert);
+                }
+                if (certificateDetail.Cert.RootCert != null)
+                {
+                    _logger.LogDebug("Adding root certificate to full chain for {CertificateId}",
+                        certificateDetail.Id);
+                    fullChain.AppendLine(certificateDetail.Cert.RootCert);
+                }
 
                 certificatesBuffer.Add(
                     new AnyCAPluginCertificate
                     {
                         CARequestID = certificateDetail.Id,
-                        Certificate = certificateDetail.Cert.EndEntityCert,
                         Status = certStatus,
+                        Certificate = fullChain.ToString(),
+                        CSR = certificateDetail.Cert.Csr,
                         ProductID = certificateDetail.CertType,
-                        RevocationDate = revocationDate
+                        RevocationDate = revocationDate,
+                        // RevocationReason = certificateDetail.Cert.RevokeStatus, // TODO: Not available in MarkMonitor API
                     }, cancelToken);
                 numberOfCertificates++;
                 _logger.LogTrace("Total certificates added to buffer: {NumberOfCertificates}", numberOfCertificates);

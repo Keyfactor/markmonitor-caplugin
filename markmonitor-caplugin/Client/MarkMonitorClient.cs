@@ -678,6 +678,9 @@ public class MarkMonitorClient : IDisposable
             if (order == null) throw new Exception($"Failed to enroll certificate `{subject}` with MarkMonitor");
 
             _logger.LogInformation("Certificate enrolled successfully");
+            _logger.LogInformation(
+                "Order {CARequestID} was created with ContactId {ContactId} and GroupId {GroupId}", order.Id,
+                resolvedContact?.Id, groupIdGuid);
             var enrollmentResult = new EnrollmentResult
             {
                 CARequestID = order.Id,

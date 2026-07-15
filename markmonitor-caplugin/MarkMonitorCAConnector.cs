@@ -331,7 +331,6 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         if (string.IsNullOrWhiteSpace(apiUsername))
             errors.Add($"A valid service account `{MarkMonitorConstants.ConfigConstants.ApiUsername}` is required");
         else _logger.LogDebug($"{MarkMonitorConstants.ConfigConstants.ApiUsername} is set");
-        _logger.LogTrace("MarkMonitor API Username: {Username}", apiUsername);
 
         _logger.LogDebug("Checking the API base URL");
         var baseURL = connectionInfo.TryGetValue(MarkMonitorConstants.ConfigConstants.BaseUrl, out var aUrl)

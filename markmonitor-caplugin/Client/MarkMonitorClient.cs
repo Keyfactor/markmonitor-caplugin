@@ -547,7 +547,8 @@ public class MarkMonitorClient : IDisposable
             if (!string.IsNullOrEmpty(additionalEmails))
             {
                 additionalEmails = additionalEmails.Replace(" ", ",");
-                additionalEmailsList = additionalEmails.Split(',').ToList();
+                additionalEmailsList = additionalEmails
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
             }
 
             MarkMonitorOrganizationResponse org;

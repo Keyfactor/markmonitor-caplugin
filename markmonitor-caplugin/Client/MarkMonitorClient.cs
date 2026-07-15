@@ -859,12 +859,24 @@ public class MarkMonitorClient : IDisposable
         }
     }
 
+    /// <summary>
+    /// Revokes the certificate for the given order. MarkMonitor's revoke action (PATCH
+    /// /certs/v1/order/{id}/revoke) has no field for a revocation reason code - its request schema
+    /// only accepts cert/ignoreOrgCheck/additionalEmails - so the <paramref name="reason"/> parameter
+    /// cannot be sent to MarkMonitor. It's accepted (rather than removed) to match
+    /// IAnyCAPlugin.Revoke's signature; a non-default value is logged so it's visible that the
+    /// reason was received but couldn't be forwarded, rather than silently dropped.
+    /// </summary>
     public async Task<bool> RevokeCertificateAsync(string orderId, string orgName = null, uint reason = 0)
     {
         _logger.MethodEntry();
         try
         {
             _logger.LogInformation("Revoking certificate associated with order {OrderId}", orderId);
+            if (reason != 0)
+                _logger.LogWarning(
+                    "Revocation reason {Reason} was requested for order {OrderId}, but MarkMonitor's revoke API has no field for a reason code - it will not be sent",
+                    reason, orderId);
             await EnsureAuthenticatedAsync();
 
             var url = $"{BaseUrl}/certs/v1/order/{orderId}/revoke";

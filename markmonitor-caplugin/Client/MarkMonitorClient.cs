@@ -370,6 +370,32 @@ public class MarkMonitorClient : IDisposable
         }
     }
 
+    public async Task<MarkMonitorOrganizationResponse> GetOrganizationAsync(string orgId)
+    {
+        _logger.MethodEntry();
+        try
+        {
+            await EnsureAuthenticatedAsync();
+            var url = $"{BaseUrl}/certs/v1/organization/{orgId}";
+            _logger.LogDebug("Getting organization from MarkMonitor {Url}", url);
+            var response = await _httpClient.GetAsync(url);
+            var content = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode) throw new Exception(BuildErrorString(content));
+
+            return JsonConvert.DeserializeObject<MarkMonitorOrganizationResponse>(content);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError("An error has occurred: {EMessage}", e.Message);
+            return null;
+        }
+        finally
+        {
+            _logger.MethodExit();
+        }
+    }
+
     public async Task<List<MarkMonitorGroup>> ListGroupsAsync(int page = 0, int limit = 0, string name = "")
     {
         _logger.MethodEntry();
@@ -488,9 +514,20 @@ public class MarkMonitorClient : IDisposable
                 additionalEmailsList = additionalEmails.Split(',').ToList();
             }
 
-            var orgIds = await ListOrganizationsAsync(0, 1, config.OrgName);
-            _logger.LogTrace("Organizations found: {@OrgIds}", orgIds);
-            var org = orgIds.FirstOrDefault();
+            MarkMonitorOrganizationResponse org;
+            if (Guid.TryParse(config.OrgName, out _))
+            {
+                _logger.LogDebug("OrgId '{OrgName}' looks like a GUID - fetching the organization directly",
+                    config.OrgName);
+                org = await GetOrganizationAsync(config.OrgName);
+            }
+            else
+            {
+                var orgs = await ListOrganizationsAsync(0, 1, config.OrgName);
+                _logger.LogTrace("Organizations found: {@Orgs}", orgs);
+                org = orgs?.FirstOrDefault();
+            }
+
             var orgId = org?.Id;
             _logger.LogTrace("Organization ID: {OrgId}", orgId);
             if (string.IsNullOrEmpty(orgId))

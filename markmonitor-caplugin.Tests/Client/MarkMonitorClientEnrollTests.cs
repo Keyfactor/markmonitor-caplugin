@@ -37,4 +37,52 @@ public class MarkMonitorClientEnrollTests
         Assert.Contains("The CSR format is invalid", ex.Message);
         Assert.Contains("cert.csr", ex.Message);
     }
+
+    [Fact]
+    public async Task EnrollCertificateAsync_WhenOrgNameIsAGuid_FetchesTheOrganizationDirectlyById()
+    {
+        // The OrgId CA connection setting is documented as accepting either a friendly name or a
+        // GUID. Before this fix, a GUID was always passed as a *name* search filter, which would
+        // never match a real org (org names aren't GUIDs) and enrollment would fail with
+        // "Organization ID not found".
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", $"/certs/v1/organization/{SampleOrgs.DefaultOrgId}"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK, SampleOrgs.OrgWithContact()))
+            .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
+                    SampleOrders.OrderWithCert("order-guid-org", "CREATED")));
+        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        await client.AuthenticateAsync();
+        var config = Config();
+        config.OrgName = SampleOrgs.DefaultOrgId;
+
+        var result = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), config);
+
+        Assert.NotNull(result);
+        Assert.DoesNotContain(handler.Requests,
+            req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization?"));
+    }
+
+    [Fact]
+    public async Task EnrollCertificateAsync_WhenOrgNameIsAFriendlyName_SearchesOrganizationsByName()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())))
+            .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
+                    SampleOrders.OrderWithCert("order-name-org", "CREATED")));
+        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        await client.AuthenticateAsync();
+
+        var result = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
+
+        Assert.NotNull(result);
+        Assert.Contains(handler.Requests, req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization?"));
+    }
 }

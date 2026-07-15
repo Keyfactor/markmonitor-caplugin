@@ -224,7 +224,7 @@ public class MarkMonitorClient : IDisposable
         catch (Exception e)
         {
             _logger.LogError("An error has occurred: {EMessage}", e.Message);
-            return 0;
+            throw;
         }
         finally
         {
@@ -309,7 +309,7 @@ public class MarkMonitorClient : IDisposable
         catch (Exception e)
         {
             _logger.LogError("An error has occurred: {EMessage}", e.Message);
-            return null;
+            throw;
         }
         finally
         {
@@ -370,7 +370,7 @@ public class MarkMonitorClient : IDisposable
         catch (Exception e)
         {
             _logger.LogError("An error has occurred: {EMessage}", e.Message);
-            return null;
+            throw;
         }
         finally
         {
@@ -438,6 +438,8 @@ public class MarkMonitorClient : IDisposable
         }
         catch (Exception e)
         {
+            // Group resolution is an optional, best-effort lookup (EnrollCertificateAsync falls back
+            // to no group on failure) - deliberately swallowed rather than failing the enrollment.
             _logger.LogError("An error has occurred: {EMessage}", e.Message);
             return null;
         }

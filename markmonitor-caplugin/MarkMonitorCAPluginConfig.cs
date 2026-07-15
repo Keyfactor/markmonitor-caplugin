@@ -106,6 +106,37 @@ public class MarkMonitorCAPluginConfig
                 Hidden = false,
                 DefaultValue = "",
                 Type = "String"
+            },
+            [EnrollmentConfigConstants.AdditionalEmails] = new()
+            {
+                Comments =
+                    "List of 0 or more comma separated email addresses to send the certificate to via email after generation.",
+                Hidden = false,
+                DefaultValue = "",
+                Type = "String"
+            },
+            [EnrollmentConfigConstants.MarkmonitorGroup] = new()
+            {
+                Comments = "The name or GUID of a Markmonitor group to use for the certificate request.",
+                Hidden = false,
+                DefaultValue = "",
+                Type = "String"
+            },
+            [EnrollmentConfigConstants.MarkmonitorContact] = new()
+            {
+                Comments =
+                    "The name or GUID of a Markmonitor contact to use for the certificate request. Will use default Markmonitor organization contact if not specified.",
+                Hidden = false,
+                DefaultValue = "",
+                Type = "String"
+            },
+            [EnrollmentConfigConstants.DCVMethod] = new()
+            {
+                Comments =
+                    "The method to use for Domain Control Validation (DCV). Valid values are EMAIL, DNS_CNAME_TOKEN, HTTP_TOKEN, DNS_TXT_TOKEN. Default is EMAIL.",
+                Hidden = false,
+                DefaultValue = "EMAIL",
+                Type = "String"
             }
         };
     }
@@ -200,5 +231,21 @@ public class MarkMonitorCAPluginConfig
         /// The certificate validity in years parameter name.
         /// </summary>
         public const string CertificateValidityInYears = "CertificateValidityInYears";
+        /// <summary>
+        /// The additional emails parameter name.
+        /// </summary>
+        public const string AdditionalEmails = "AdditionalEmails";
+        /// <summary>
+        /// The MarkMonitor group parameter name.
+        /// </summary>
+        public const string MarkmonitorGroup = "MarkmonitorGroup";
+        /// <summary>
+        /// The MarkMonitor contact parameter name.
+        /// </summary>
+        public const string MarkmonitorContact = "MarkmonitorContact";
+        /// <summary>
+        /// The domain control validation method parameter name.
+        /// </summary>
+        public const string DCVMethod = "DCVMethod";
     }
 }

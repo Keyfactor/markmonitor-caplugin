@@ -353,6 +353,49 @@ public class MarkMonitorClient
         }
     }
 
+    public async Task<List<MarkMonitorGroup>> ListGroupsAsync(int page = 0, int limit = 0, string name = "")
+    {
+        _logger.MethodEntry();
+        EnsureAuthenticated();
+        var output = new List<MarkMonitorGroup>();
+        try
+        {
+            _logger.LogInformation("Retrieving groups from MarkMonitor");
+            var currentPage = 0;
+            var allPagesDownloaded = false;
+
+            do
+            {
+                var nextUrl = $"{BaseUrl}/auth/v1/group";
+
+                var query = BuildListOrgsQueryString(name, "", limit, currentPage);
+                if (query.Count > 0) nextUrl += "?" + string.Join("&", query);
+
+                _logger.LogDebug("Getting groups from MarkMonitor {NextUrl}", nextUrl);
+                var response = await _httpClient.GetAsync(nextUrl);
+
+                var content = await response.Content.ReadAsStringAsync();
+                if (!response.IsSuccessStatusCode) throw new Exception(BuildErrorString(content));
+
+                var groupListResponse = JsonConvert.DeserializeObject<MarkMonitorListGroupsResponse>(content);
+                output.AddRange(groupListResponse.Groups ?? new List<MarkMonitorGroup>());
+                currentPage++;
+                allPagesDownloaded = currentPage >= groupListResponse.MarkMonitorPage.TotalPages;
+            } while (!allPagesDownloaded);
+
+            return output;
+        }
+        catch (Exception e)
+        {
+            _logger.LogError("An error has occurred: {EMessage}", e.Message);
+            return null;
+        }
+        finally
+        {
+            _logger.MethodExit();
+        }
+    }
+
     public async Task<AnyCAPluginCertificate> GetSingleOrderAsync(string orderId)
     {
         try
@@ -413,8 +456,10 @@ public class MarkMonitorClient
         {
             EnsureAuthenticated();
 
+            var caseInsensitiveParams = new Dictionary<string, string>(productParams, StringComparer.OrdinalIgnoreCase);
+
             var additionalEmails =
-                productParams.GetValueOrDefault("additionalEmails");
+                caseInsensitiveParams.GetValueOrDefault("additionalEmails");
             var additionalEmailsList = new List<string>();
             if (!string.IsNullOrEmpty(additionalEmails))
             {
@@ -425,7 +470,8 @@ public class MarkMonitorClient
 
             var orgIds = await ListOrganizationsAsync(0, 1, config.OrgName);
             _logger.LogTrace("Organizations found: {@OrgIds}", orgIds);
-            var orgId = orgIds.FirstOrDefault()?.Id;
+            var org = orgIds.FirstOrDefault();
+            var orgId = org?.Id;
             _logger.LogTrace("Organization ID: {OrgId}", orgId);
             if (string.IsNullOrEmpty(orgId))
             {
@@ -435,12 +481,64 @@ public class MarkMonitorClient
 
             var orgIdGuid = Guid.Parse(orgId);
 
-            var comments = productParams.GetValueOrDefault("comments", "Requested via Keyfactor Command");
+            var comments = caseInsensitiveParams.GetValueOrDefault("comments", "Requested via Keyfactor Command");
             _logger.LogTrace("Comments: {Comments}", comments);
-            var locale = productParams.GetValueOrDefault("locale", "en");
+            var locale = caseInsensitiveParams.GetValueOrDefault("locale", "en");
             _logger.LogTrace("Locale: {Locale}", locale);
-            var provider = productParams.GetValueOrDefault("provider", "DIGICERT");
+            var provider = caseInsensitiveParams.GetValueOrDefault("provider", "DIGICERT");
             _logger.LogTrace("Provider: {Provider}", provider);
+
+            _logger.LogDebug("Resolving MarkMonitor contact for order");
+            var contactParam = caseInsensitiveParams.GetValueOrDefault(
+                MarkMonitorCAPluginConfig.EnrollmentConfigConstants.MarkmonitorContact);
+            var resolvedContact = ResolveContact(org?.Contacts, contactParam);
+            var orderContacts = resolvedContact != null
+                ? new List<MarkMonitorCreateOrderContact>
+                {
+                    new() { Id = resolvedContact.Id, ContactTypes = resolvedContact.ContactTypes }
+                }
+                : new List<MarkMonitorCreateOrderContact>();
+            if (resolvedContact == null)
+                _logger.LogWarning(
+                    "No MarkMonitor contact could be resolved for organization {OrgName}; MarkMonitor may reject the order if a contact is required",
+                    config.OrgName);
+            else
+                _logger.LogTrace("Resolved MarkMonitor contact: {ContactId} ({Email})", resolvedContact.Id,
+                    resolvedContact.Email);
+
+            _logger.LogDebug("Resolving MarkMonitor group for order");
+            var groupParam = caseInsensitiveParams.GetValueOrDefault(
+                MarkMonitorCAPluginConfig.EnrollmentConfigConstants.MarkmonitorGroup);
+            Guid? groupIdGuid = null;
+            if (!string.IsNullOrWhiteSpace(groupParam))
+            {
+                if (Guid.TryParse(groupParam, out var parsedGroupId))
+                {
+                    groupIdGuid = parsedGroupId;
+                }
+                else
+                {
+                    var groups = await ListGroupsAsync(0, 0, groupParam);
+                    var matchedGroup = groups?.FirstOrDefault(g =>
+                        string.Equals(g.Name, groupParam, StringComparison.OrdinalIgnoreCase));
+                    if (matchedGroup != null)
+                        groupIdGuid = Guid.Parse(matchedGroup.Id);
+                    else
+                        _logger.LogWarning("MarkMonitor group '{GroupParam}' could not be resolved to an ID",
+                            groupParam);
+                }
+            }
+
+            var validDcvMethods = Enum.GetValues<DomainControlValidationMethods>()
+                .Select(m => m.GetDescription()).ToList();
+            var dcvMethod = caseInsensitiveParams.GetValueOrDefault(
+                MarkMonitorCAPluginConfig.EnrollmentConfigConstants.DCVMethod,
+                DomainControlValidationMethods.Email.GetDescription());
+            if (!validDcvMethods.Contains(dcvMethod, StringComparer.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning("Invalid DCVMethod '{DcvMethod}' specified, defaulting to EMAIL", dcvMethod);
+                dcvMethod = DomainControlValidationMethods.Email.GetDescription();
+            }
 
             // Lookup order type in CertOrderTypes enum
             _logger.LogDebug("Looking up order type {OrderType} in CertOrderTypes enum", orderType);
@@ -465,8 +563,8 @@ public class MarkMonitorClient
                 AdditionalEmails = additionalEmailsList,
                 SkipPrice = true,
                 OrganizationId = orgIdGuid,
-                // GroupId = null,
-                // Contacts = orderContacts,
+                GroupId = groupIdGuid,
+                Contacts = orderContacts,
                 Comments = comments,
                 CertType = certOrderType.GetDescription(),
                 Locale = locale,
@@ -475,7 +573,7 @@ public class MarkMonitorClient
                 {
                     CommonName = cleanSubject(subject),
                     Csr = csrPem.Replace("\r", ""),
-                    DcvMethod = "EMAIL",
+                    DcvMethod = dcvMethod,
                     DcvEmails = new List<DcvEmail>(),
                     AlgorithmHash = requestAlgorithm
                 }
@@ -506,6 +604,38 @@ public class MarkMonitorClient
         {
             _logger.MethodExit();
         }
+    }
+
+    private MarkMonitorGetContactResponse ResolveContact(List<MarkMonitorGetContactResponse> contacts,
+        string contactParam)
+    {
+        if (contacts == null || contacts.Count == 0) return null;
+
+        if (!string.IsNullOrWhiteSpace(contactParam))
+        {
+            if (Guid.TryParse(contactParam, out var contactGuid))
+            {
+                var byId = contacts.FirstOrDefault(c => c.Id == contactGuid);
+                if (byId != null) return byId;
+            }
+
+            var byEmail =
+                contacts.FirstOrDefault(c => string.Equals(c.Email, contactParam, StringComparison.OrdinalIgnoreCase));
+            if (byEmail != null) return byEmail;
+
+            var byName = contacts.FirstOrDefault(c =>
+                string.Equals($"{c.FirstName} {c.LastName}", contactParam, StringComparison.OrdinalIgnoreCase));
+            if (byName != null) return byName;
+
+            _logger.LogWarning(
+                "MarkMonitor contact '{ContactParam}' could not be resolved; falling back to the default organization contact",
+                contactParam);
+        }
+
+        return contacts.FirstOrDefault(c =>
+                   c.ContactTypes != null && c.ContactTypes.Any(t =>
+                       string.Equals(t.Type, "ORGANIZATION_CONTACT", StringComparison.OrdinalIgnoreCase)))
+               ?? contacts.FirstOrDefault();
     }
 
     private string cleanSubject(string subject)
@@ -710,7 +840,24 @@ public class MarkMonitorClient
         var json = JObject.Parse(jsonString);
         var errorMessages = new List<string>();
 
-        if (json["validation_messages"] != null)
+        // MarkMonitor 400 responses: {"validations":[{"field":"cert.csr","code":"...","message":"..."}]}
+        if (json["validations"] is JArray validations)
+            foreach (var validation in validations)
+            {
+                var field = validation["field"]?.ToString();
+                var code = validation["code"]?.ToString();
+                var message = validation["message"]?.ToString();
+                errorMessages.Add($"{field}: {message} ({code})");
+            }
+        // MarkMonitor 500 responses: {"errors":[{"code":"...","message":"..."}]}
+        else if (json["errors"] is JArray errors)
+            foreach (var error in errors)
+            {
+                var code = error["code"]?.ToString();
+                var message = error["message"]?.ToString();
+                errorMessages.Add($"{message} ({code})");
+            }
+        else if (json["validation_messages"] != null)
             foreach (var validationMessage in json["validation_messages"])
             {
                 var field = validationMessage.Path;
@@ -730,10 +877,10 @@ public class MarkMonitorClient
             }
         else if (json["detail"] != null)
             errorMessages.Add(json["detail"].ToString());
-        else
-            return "No validation errors found.";
 
-        return string.Join(Environment.NewLine, errorMessages);
+        return errorMessages.Any()
+            ? string.Join(Environment.NewLine, errorMessages)
+            : $"No recognized error format found in response: {jsonString}";
     }
 
     private byte[] GetCsrBytes(string csr)

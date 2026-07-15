@@ -599,6 +599,13 @@ public class MarkMonitorClient : IDisposable
                 _logger.LogTrace("Resolved MarkMonitor contact: {ContactId} ({Email})", resolvedContact.Id,
                     resolvedContact.Email);
 
+            // Unlike contacts (scoped to org?.Contacts), group resolution can't be scoped to the
+            // configured organization: MarkMonitor's Auth API models groups as account/tenant-wide -
+            // /auth/v1/group has no organizationId filter, and the Group schema it returns
+            // (id/name/description/dateCreated/dateUpdated) has no organizationId field to check
+            // against either. There is nothing in this API to scope against, so a group name/GUID
+            // that resolves at all is accepted as-is; matching is by exact (case-insensitive) name
+            // rather than a substring, which is the closest available mitigation.
             _logger.LogDebug("Resolving MarkMonitor group for order");
             var groupParam = caseInsensitiveParams.GetValueOrDefault(
                 MarkMonitorCAPluginConfig.EnrollmentConfigConstants.MarkmonitorGroup);

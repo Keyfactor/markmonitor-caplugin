@@ -210,6 +210,9 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             _logger.LogTrace("Enrollment result: {EnrollResult}", JsonConvert.SerializeObject(enrollResult));
             _logger.LogInformation("Enrollment completed successfully for subject: {Subject}", subject);
 
+            if (enrollmentType == EnrollmentType.RenewOrReissue)
+                await RevokePriorCertificateIfPresentAsync(client, productInfo, subject);
+
             return enrollResult;
         }
         catch (Exception e)
@@ -220,6 +223,51 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         finally
         {
             _logger.MethodExit();
+        }
+    }
+
+    /// <summary>
+    /// For a RenewOrReissue enrollment, the AnyGateway core framework passes the prior
+    /// certificate's serial number in productInfo.ProductParameters["PriorCertSN"]. Resolves it to a
+    /// CARequestID via the injected ICertificateDataReader and revokes it now that the replacement
+    /// certificate has issued successfully. Falls back to treating the enrollment as a plain new
+    /// issuance (no revoke attempted) if PriorCertSN is missing or can't be resolved - a failure to
+    /// revoke the old certificate should not fail delivery of the new one.
+    /// </summary>
+    private async Task RevokePriorCertificateIfPresentAsync(MarkMonitorClient client,
+        EnrollmentProductInfo productInfo, string subject)
+    {
+        var priorCertSn = productInfo.ProductParameters?
+            .FirstOrDefault(kv => string.Equals(kv.Key, "PriorCertSN", StringComparison.OrdinalIgnoreCase)).Value;
+
+        if (string.IsNullOrWhiteSpace(priorCertSn))
+        {
+            _logger.LogWarning(
+                "Enrollment for {Subject} was requested as RenewOrReissue but no PriorCertSN was provided - treating it as a new enrollment",
+                subject);
+            return;
+        }
+
+        var priorRequestId = await _certificateDataReader.GetRequestIDBySerialNumber(priorCertSn);
+        if (string.IsNullOrWhiteSpace(priorRequestId))
+        {
+            _logger.LogWarning(
+                "Could not resolve a CARequestID for PriorCertSN {PriorCertSn} - the prior certificate will not be revoked",
+                priorCertSn);
+            return;
+        }
+
+        try
+        {
+            _logger.LogInformation(
+                "Revoking prior certificate {PriorRequestId} (serial {PriorCertSn}) after successful renewal",
+                priorRequestId, priorCertSn);
+            await client.RevokeCertificateAsync(priorRequestId, _config.OrgName);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError("Failed to revoke prior certificate {PriorRequestId}: {EMessage}", priorRequestId,
+                e.Message);
         }
     }
 

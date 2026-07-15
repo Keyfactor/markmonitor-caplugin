@@ -31,6 +31,9 @@ public class MarkMonitorCAPluginRenewOrReissueTests
     public async Task Enroll_RenewOrReissueWithResolvablePriorCertSN_RevokesThePriorCertificate()
     {
         var handler = BaseHandler()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrders.OrderWithCert("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "DIGI_ISSUED")))
             .When(req => FakeHttpMessageHandler.Is(req, "PATCH", "/certs/v1/order/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/revoke"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK, "{}"));
         var (plugin, _, reader) = BuildPlugin(handler);

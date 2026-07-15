@@ -68,6 +68,12 @@ public class OrderContent
     public string GroupId { get; set; }
 
     /// <summary>
+    ///     Gets or sets the organization ID that owns this order.
+    /// </summary>
+    [JsonProperty("organizationId")]
+    public string OrganizationId { get; set; }
+
+    /// <summary>
     ///     Gets or sets the contacts associated with the order.
     /// </summary>
     [JsonProperty("contacts")]

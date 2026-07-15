@@ -465,25 +465,37 @@ public class MarkMonitorClient : IDisposable
         }
     }
 
+    /// <summary>Fetches the raw order content for a single order ID (used both to build the
+    /// public-facing AnyCAPluginCertificate and, internally, to verify an order's owning
+    /// organization before revoking it).</summary>
+    private async Task<OrderContent> FetchOrderAsync(string orderId)
+    {
+        ValidateOrderIdFormat(orderId);
+        await EnsureAuthenticatedAsync();
+
+        _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _bearerToken);
+        _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        var response = await _httpClient.GetAsync($"{BaseUrl}/certs/v1/order/{orderId}");
+        var content = await response.Content.ReadAsStringAsync();
+        if (!response.IsSuccessStatusCode) throw new Exception(BuildErrorString(content));
+        return JsonConvert.DeserializeObject<OrderContent>(content);
+    }
+
+    /// <summary>Resolves a CA connection's configured OrgId (which may be a friendly name or a
+    /// GUID) to the organization's real GUID.</summary>
+    private async Task<string> ResolveOrganizationIdAsync(string orgNameOrId)
+    {
+        if (Guid.TryParse(orgNameOrId, out _)) return orgNameOrId;
+        var orgs = await ListOrganizationsAsync(0, 1, orgNameOrId);
+        return orgs.FirstOrDefault()?.Id;
+    }
+
     public async Task<AnyCAPluginCertificate> GetSingleOrderAsync(string orderId)
     {
         try
         {
-            ValidateOrderIdFormat(orderId);
-            await EnsureAuthenticatedAsync();
-
-            _httpClient.DefaultRequestHeaders.Authorization =
-                new AuthenticationHeaderValue("Bearer", _bearerToken);
-            _httpClient.DefaultRequestHeaders.Accept.Add(
-                new MediaTypeWithQualityHeaderValue("application/json"));
-
-            var response = await _httpClient.GetAsync($"{BaseUrl}/certs/v1/order/{orderId}");
-            var content = await response.Content.ReadAsStringAsync();
-            OrderContent order;
-            if (response.IsSuccessStatusCode)
-                order = JsonConvert.DeserializeObject<OrderContent>(content);
-            else
-                throw new Exception(BuildErrorString(content));
+            var order = await FetchOrderAsync(orderId);
 
             // order.Cert can be null for an order that hasn't progressed far enough yet (e.g.
             // CREATED/DIGI_NEEDS_CSR) - same class of gap already fixed in GetCertificateInventoryAsync.
@@ -989,6 +1001,26 @@ public class MarkMonitorClient : IDisposable
                     "Revocation reason {Reason} was requested for order {OrderId}, but MarkMonitor's revoke API has no field for a reason code - it will not be sent",
                     reason, orderId);
             await EnsureAuthenticatedAsync();
+
+            // MarkMonitor's own ignoreOrgCheck=false default only guards against revoking an order
+            // that belongs to a different reseller account entirely - it has no notion of the
+            // specific sub-organization this CA connector is scoped to. That distinction matters most
+            // for RenewOrReissue, where the order ID being revoked comes from Command's
+            // ICertificateDataReader rather than from this org's own enrollment - so verify it here
+            // rather than trusting the caller (or MarkMonitor) to have scoped it correctly.
+            if (!string.IsNullOrWhiteSpace(orgName))
+            {
+                var expectedOrgId = await ResolveOrganizationIdAsync(orgName);
+                var order = await FetchOrderAsync(orderId);
+                if (expectedOrgId == null ||
+                    !string.Equals(order.OrganizationId, expectedOrgId, StringComparison.OrdinalIgnoreCase))
+                {
+                    var orgMismatchMsg =
+                        $"Order {orderId} belongs to a different organization than the configured '{orgName}' - refusing to revoke it";
+                    _logger.LogError("{ErrMsg}", orgMismatchMsg);
+                    throw new Exception(orgMismatchMsg);
+                }
+            }
 
             var url = $"{BaseUrl}/certs/v1/order/{orderId}/revoke";
             _logger.LogDebug("Revoking certificate at {Url}", url);

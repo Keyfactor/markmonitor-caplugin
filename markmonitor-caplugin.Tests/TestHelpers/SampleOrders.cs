@@ -4,12 +4,14 @@ namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.TestHelpers;
 public static class SampleOrders
 {
     public static string OrderWithCert(string id, string status, string? revokeStatus = null,
-        string dateValidUntil = "2027-01-01T00:00:00Z", string certType = "SSL_DV_GEOTRUST") =>
+        string dateValidUntil = "2027-01-01T00:00:00Z", string certType = "SSL_DV_GEOTRUST",
+        string? organizationId = SampleOrgs.DefaultOrgId) =>
         $$"""
           {
             "id": "{{id}}",
             "certType": "{{certType}}",
             "status": "{{status}}",
+            "organizationId": {{(organizationId == null ? "null" : $"\"{organizationId}\"")}},
             "cert": {
               "commonName": "test.mmcertdomain.com",
               "csr": "-----BEGIN CERTIFICATE REQUEST-----\nMII...\n-----END CERTIFICATE REQUEST-----",

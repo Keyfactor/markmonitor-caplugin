@@ -18,6 +18,12 @@ public class MarkMonitorClientRevokeTests
         // call - the actual "can't forward it" behavior is logged, not independently observable.
         var handler = new FakeHttpMessageHandler()
             .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())))
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order/11111111-1111-1111-1111-111111111111"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrders.OrderWithCert("11111111-1111-1111-1111-111111111111", "DIGI_ISSUED")))
             .When(req => FakeHttpMessageHandler.Is(req, "PATCH", "/certs/v1/order/11111111-1111-1111-1111-111111111111/revoke"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK, "{}"));
         var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
@@ -26,5 +32,51 @@ public class MarkMonitorClientRevokeTests
         var result = await client.RevokeCertificateAsync("11111111-1111-1111-1111-111111111111", "Test Org", reason);
 
         Assert.True(result);
+    }
+
+    [Fact]
+    public async Task RevokeCertificateAsync_WhenTheOrderBelongsToADifferentOrganization_ThrowsWithoutRevoking()
+    {
+        // The prior cert's request ID in the RenewOrReissue path comes from Command's
+        // ICertificateDataReader, not from this org's own enrollment - so verify the order actually
+        // belongs to the configured org before revoking it, rather than trusting the caller.
+        const string orderId = "11111111-1111-1111-1111-111111111111";
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())))
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", $"/certs/v1/order/{orderId}"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrders.OrderWithCert(orderId, "DIGI_ISSUED",
+                        organizationId: "99999999-9999-9999-9999-999999999999")))
+            .When(req => FakeHttpMessageHandler.Is(req, "PATCH", $"/certs/v1/order/{orderId}/revoke"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK, "{}"));
+        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        await client.AuthenticateAsync();
+
+        await Assert.ThrowsAsync<Exception>(() => client.RevokeCertificateAsync(orderId, "Test Org"));
+
+        Assert.DoesNotContain(handler.Requests, r => FakeHttpMessageHandler.Is(r, "PATCH", "/revoke"));
+    }
+
+    [Fact]
+    public async Task RevokeCertificateAsync_WithOrgNameGivenAsAGuid_ResolvesWithoutAnOrganizationLookup()
+    {
+        const string orderId = "11111111-1111-1111-1111-111111111111";
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", $"/certs/v1/order/{orderId}"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrders.OrderWithCert(orderId, "DIGI_ISSUED", organizationId: SampleOrgs.DefaultOrgId)))
+            .When(req => FakeHttpMessageHandler.Is(req, "PATCH", $"/certs/v1/order/{orderId}/revoke"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK, "{}"));
+        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        await client.AuthenticateAsync();
+
+        var result = await client.RevokeCertificateAsync(orderId, SampleOrgs.DefaultOrgId);
+
+        Assert.True(result);
+        Assert.DoesNotContain(handler.Requests, r => FakeHttpMessageHandler.Is(r, "GET", "/certs/v1/organization"));
     }
 }

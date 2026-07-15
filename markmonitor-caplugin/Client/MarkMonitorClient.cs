@@ -14,7 +14,7 @@ using Org.BouncyCastle.Tls;
 
 namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Client;
 
-public class MarkMonitorClient
+public class MarkMonitorClient : IDisposable
 {
     private readonly HttpClient _httpClient;
     private readonly ILogger _logger;
@@ -51,6 +51,11 @@ public class MarkMonitorClient
         }
 
         _httpClient = new HttpClient(handler);
+    }
+
+    public void Dispose()
+    {
+        _httpClient.Dispose();
     }
 
     public string BaseUrl { get; }

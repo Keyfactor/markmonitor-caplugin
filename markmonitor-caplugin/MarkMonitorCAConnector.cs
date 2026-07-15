@@ -31,6 +31,8 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
     private MarkMonitorConfig _config;
     private MarkMonitorClient Client;
     private bool _markMonitorClientWasInjected = false;
+    private MarkMonitorClient _cachedClient;
+    private readonly SemaphoreSlim _clientLock = new(1, 1);
 
 
     private Dictionary<int, string> DCVTokens { get; } = new();
@@ -347,24 +349,38 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         
     }
 
-    private async Task<MarkMonitorClient> CreateAndAuthenticateClientAsync()
+    /// <summary>
+    /// Returns a single MarkMonitorClient shared for the lifetime of this plugin instance, building
+    /// it (or adopting an injected one) on first use only. Each of MarkMonitorClient's own methods
+    /// authenticates/re-authenticates itself lazily as needed, so this method does not need to - and
+    /// deliberately does not - force an eager authentication call on every invocation.
+    /// </summary>
+    internal async Task<MarkMonitorClient> CreateAndAuthenticateClientAsync()
     {
         _logger.MethodEntry();
         try
         {
-            var client = _markMonitorClientWasInjected
-                ? Client
-                : new MarkMonitorClient(
-                    _config.BaseUrl,
-                    _config.ApiKey,
-                    _config.ApiUsername,
-                    _config.ApiPassword,
-                    true
-                );
-            _logger.LogDebug("Authenticating with MarkMonitor API");
-            _logger.LogTrace("MarkMonitor API Username: {Username}", _config.ApiUsername);
-            await client.AuthenticateAsync();
-            return client;
+            if (_cachedClient != null) return _cachedClient;
+
+            await _clientLock.WaitAsync();
+            try
+            {
+                _cachedClient ??= _markMonitorClientWasInjected
+                    ? Client
+                    : new MarkMonitorClient(
+                        _config.BaseUrl,
+                        _config.ApiKey,
+                        _config.ApiUsername,
+                        _config.ApiPassword,
+                        true
+                    );
+            }
+            finally
+            {
+                _clientLock.Release();
+            }
+
+            return _cachedClient;
         }
         finally
         {

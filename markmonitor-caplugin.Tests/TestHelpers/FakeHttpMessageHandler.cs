@@ -57,6 +57,6 @@ public sealed class FakeHttpMessageHandler : HttpMessageHandler
     public FakeHttpMessageHandler WithSuccessfulAuth(string token = "fake-token", int expiresIn = 3600)
     {
         return When(req => Is(req, "POST", "/auth/v1/auth/authenticate"),
-            Json(HttpStatusCode.OK, $"{{\"token\":\"{token}\",\"expires_in\":{expiresIn}}}"));
+            Json(HttpStatusCode.OK, $"{{\"token\":\"{token}\",\"expiresIn\":{expiresIn}}}"));
     }
 }

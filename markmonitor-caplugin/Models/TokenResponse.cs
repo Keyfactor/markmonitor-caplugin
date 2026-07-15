@@ -6,5 +6,5 @@ public class TokenResponse
 {
     [JsonProperty("token")] public string BearerToken { get; set; }
 
-    [JsonProperty("expires_in")] public int ExpiresIn { get; set; }
+    [JsonProperty("expiresIn")] public int ExpiresIn { get; set; }
 }

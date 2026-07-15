@@ -20,17 +20,20 @@ public class MarkMonitorClient
     private readonly ILogger _logger;
     private string _apiKey;
     private string _bearerToken;
+    private DateTime? _tokenExpiresAtUtc;
     private string _password;
     private string _username;
+    private readonly TimeProvider _timeProvider;
 
     public MarkMonitorClient(string baseUrl, string apiKey, string username, string password, bool validateSsl = true,
-        HttpMessageHandler handler = null)
+        HttpMessageHandler handler = null, TimeProvider timeProvider = null)
     {
         BaseUrl = baseUrl;
         _logger = LogHandler.GetClassLogger(GetType());
         _apiKey = apiKey;
         _username = username;
         _password = password;
+        _timeProvider = timeProvider ?? TimeProvider.System;
 
         // A caller-supplied handler (e.g. a fake in tests) is used as-is; otherwise build the real
         // HttpClientHandler with the usual SSL validation behavior.
@@ -116,6 +119,9 @@ public class MarkMonitorClient
             _logger.LogDebug("Deserializing token response");
             var tokenResponse = JsonConvert.DeserializeObject<TokenResponse>(content);
             _bearerToken = tokenResponse.BearerToken;
+            // Subtract a small safety buffer so a request that starts just before expiry doesn't
+            // race the token dying mid-flight.
+            _tokenExpiresAtUtc = _timeProvider.GetUtcNow().UtcDateTime.AddSeconds(tokenResponse.ExpiresIn - 30);
             _logger.LogDebug("Bearer token received and valid for {TokenExpiration} seconds",
                 tokenResponse.ExpiresIn);
             _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _bearerToken);
@@ -136,7 +142,7 @@ public class MarkMonitorClient
         _logger.MethodEntry();
         try
         {
-            EnsureAuthenticated();
+            await EnsureAuthenticatedAsync();
             _logger.LogInformation("Retrieving certificate inventory from MarkMonitor");
             var certificateOrders =
                 await ListCertificateOrdersAsync(0, caId, sort, limit); //todo: providerId support???
@@ -245,7 +251,7 @@ public class MarkMonitorClient
         int limit)
     {
         _logger.MethodEntry();
-        EnsureAuthenticated();
+        await EnsureAuthenticatedAsync();
         var output = new List<OrderContent>();
         try
         {
@@ -302,7 +308,7 @@ public class MarkMonitorClient
         string name = "")
     {
         _logger.MethodEntry();
-        EnsureAuthenticated();
+        await EnsureAuthenticatedAsync();
         var output = new List<MarkMonitorOrganizationResponse>();
         try
         {
@@ -362,7 +368,7 @@ public class MarkMonitorClient
     public async Task<List<MarkMonitorGroup>> ListGroupsAsync(int page = 0, int limit = 0, string name = "")
     {
         _logger.MethodEntry();
-        EnsureAuthenticated();
+        await EnsureAuthenticatedAsync();
         var output = new List<MarkMonitorGroup>();
         try
         {
@@ -406,7 +412,7 @@ public class MarkMonitorClient
     {
         try
         {
-            EnsureAuthenticated();
+            await EnsureAuthenticatedAsync();
 
             _httpClient.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", _bearerToken);
@@ -463,7 +469,7 @@ public class MarkMonitorClient
         _logger.MethodEntry();
         try
         {
-            EnsureAuthenticated();
+            await EnsureAuthenticatedAsync();
 
             var caseInsensitiveParams = new Dictionary<string, string>(productParams, StringComparer.OrdinalIgnoreCase);
 
@@ -688,7 +694,7 @@ public class MarkMonitorClient
         _logger.MethodEntry();
         try
         {
-            EnsureAuthenticated();
+            await EnsureAuthenticatedAsync();
             logCreateOrderRequest(request);
 
             var url = $"{BaseUrl}/certs/v1/order";
@@ -734,7 +740,7 @@ public class MarkMonitorClient
         try
         {
             _logger.LogInformation("Revoking certificate {CertificateId}", orderId);
-            EnsureAuthenticated();
+            await EnsureAuthenticatedAsync();
 
             var url = $"{BaseUrl}/certs/v1/order/{orderId}/cancel";
             _logger.LogDebug("Revoking certificate at {Url}", url);
@@ -768,7 +774,7 @@ public class MarkMonitorClient
         try
         {
             _logger.LogInformation("Revoking certificate {CertificateId}", orderId);
-            EnsureAuthenticated();
+            await EnsureAuthenticatedAsync();
 
             var url = $"{BaseUrl}/certs/v1/order/{orderId}/reissue";
             _logger.LogDebug("Reissuing certificate at {Url}", url);
@@ -807,7 +813,7 @@ public class MarkMonitorClient
         try
         {
             _logger.LogInformation("Revoking certificate associated with order {OrderId}", orderId);
-            EnsureAuthenticated();
+            await EnsureAuthenticatedAsync();
 
             var url = $"{BaseUrl}/certs/v1/order/{orderId}/revoke";
             _logger.LogDebug("Revoking certificate at {Url}", url);
@@ -839,9 +845,14 @@ public class MarkMonitorClient
         }
     }
 
-    private void EnsureAuthenticated()
+    private async Task EnsureAuthenticatedAsync()
     {
-        if (string.IsNullOrEmpty(_bearerToken)) AuthenticateAsync().RunSynchronously();
+        if (string.IsNullOrEmpty(_bearerToken) || _tokenExpiresAtUtc == null ||
+            _timeProvider.GetUtcNow().UtcDateTime >= _tokenExpiresAtUtc)
+        {
+            _logger.LogDebug("No valid bearer token on hand - authenticating");
+            await AuthenticateAsync();
+        }
     }
 
     private static string BuildErrorString(string jsonString)

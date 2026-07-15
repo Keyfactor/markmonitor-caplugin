@@ -9,6 +9,7 @@ using Keyfactor.PKI.PEM;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Pkcs;
 using Org.BouncyCastle.Tls;
 
@@ -762,9 +763,23 @@ public class MarkMonitorClient : IDisposable
         _logger.MethodEntry();
         try
         {
-            // Search for the CN field in the Subject
+            if (string.IsNullOrWhiteSpace(subject)) return subject;
+
+            try
+            {
+                var cnValues = new X509Name(subject).GetValueList(X509Name.CN);
+                if (cnValues.Count > 0) return (string)cnValues[cnValues.Count - 1];
+            }
+            catch (Exception e)
+            {
+                _logger.LogDebug(
+                    "Could not parse subject '{Subject}' as an X509 DN, falling back to string search: {EMessage}",
+                    subject, e.Message);
+            }
+
+            // Fallback for a subject that isn't a fully valid DN (e.g. bare "CN=foo" with no other RDNs).
             var cnPrefix = "CN=";
-            var cnIndex = subject.IndexOf(cnPrefix, StringComparison.Ordinal);
+            var cnIndex = subject.IndexOf(cnPrefix, StringComparison.OrdinalIgnoreCase);
             if (cnIndex < 0) return subject;
             var cnStart = cnIndex + cnPrefix.Length;
             var cnEnd = subject.IndexOf(",", cnStart, StringComparison.Ordinal);

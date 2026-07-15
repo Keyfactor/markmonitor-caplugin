@@ -546,7 +546,6 @@ public class MarkMonitorClient : IDisposable
             var additionalEmailsList = new List<string>();
             if (!string.IsNullOrEmpty(additionalEmails))
             {
-                _logger.LogTrace("Additional emails provided: {AdditionalEmails}", additionalEmails);
                 additionalEmails = additionalEmails.Replace(" ", ",");
                 additionalEmailsList = additionalEmails.Split(',').ToList();
             }
@@ -639,7 +638,6 @@ public class MarkMonitorClient : IDisposable
             var certOrderType = Enum.Parse<CertOrderTypes>(orderType);
 
             _logger.LogDebug("Deserializing CSR");
-            _logger.LogTrace("CSR: {Csr}", csr);
             var csrObject = new Pkcs10CertificationRequest(GetCsrBytes(csr));
             var csrInfo = csrObject.GetCertificationRequestInfo();
 
@@ -649,7 +647,6 @@ public class MarkMonitorClient : IDisposable
 
             _logger.LogDebug("Converting CSR to PEM");
             var csrPem = PemUtilities.DERToPEM(csrObject.GetEncoded(), PemUtilities.PemObjectType.CertRequest);
-            _logger.LogTrace("CSR PEM: {CsrPem}", csrPem);
 
             _logger.LogDebug("Constructing certificate order object");
             var certOrder = new MarkMonitorCreateOrderRequest
@@ -760,14 +757,16 @@ public class MarkMonitorClient : IDisposable
         _logger.MethodEntry();
         _logger.LogTrace("CommonName: {CommonName}", request.Cert.CommonName);
         _logger.LogTrace("OrganizationId: {OrganizationId}", request.OrganizationId);
+        _logger.LogTrace("GroupId: {GroupId}", request.GroupId);
         _logger.LogTrace("CertType: {CertType}", request.CertType);
         _logger.LogTrace("Locale: {Locale}", request.Locale);
         _logger.LogTrace("Provider: {Provider}", request.Provider);
         _logger.LogTrace("Comments: {Comments}", request.Comments);
-        _logger.LogTrace("AdditionalEmails: {AdditionalEmails}", request.AdditionalEmails);
+        // Deliberately not logging AdditionalEmails (requester PII) or the CSR/full Cert object -
+        // just enough to confirm the shape of the request without leaking their content.
+        _logger.LogTrace("AdditionalEmails count: {AdditionalEmailsCount}", request.AdditionalEmails?.Count ?? 0);
         _logger.LogTrace("SkipPrice: {SkipPrice}", request.SkipPrice);
-        _logger.LogTrace("CSR: {Csr}", request.Cert.Csr);
-        _logger.LogTrace("Cert: {@Cert}", request.Cert);
+        _logger.LogTrace("DcvMethod: {DcvMethod}", request.Cert.DcvMethod);
         _logger.MethodExit();
     }
 
@@ -785,9 +784,6 @@ public class MarkMonitorClient : IDisposable
                 JsonConvert.SerializeObject(request),
                 Encoding.UTF8, "application/json"
             );
-            _logger.LogTrace("Create order payload: {@Payload}", jsonPayload);
-            _logger.LogTrace("Request JSON: {Json}", request.JSONString());
-            Console.WriteLine(jsonPayload.ReadAsStringAsync());
             var response = await _httpClient.PostAsync(url, jsonPayload);
             _logger.LogTrace("Response: {Response}", response);
 

@@ -31,10 +31,10 @@ public class MarkMonitorCAPluginRenewOrReissueTests
     public async Task Enroll_RenewOrReissueWithResolvablePriorCertSN_RevokesThePriorCertificate()
     {
         var handler = BaseHandler()
-            .When(req => FakeHttpMessageHandler.Is(req, "PATCH", "/certs/v1/order/prior-order-id/revoke"),
+            .When(req => FakeHttpMessageHandler.Is(req, "PATCH", "/certs/v1/order/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/revoke"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK, "{}"));
         var (plugin, _, reader) = BuildPlugin(handler);
-        reader.SerialNumberToRequestId["ab:cd:ef"] = "prior-order-id";
+        reader.SerialNumberToRequestId["ab:cd:ef"] = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 
         var productInfo = new EnrollmentProductInfo
         {
@@ -47,7 +47,7 @@ public class MarkMonitorCAPluginRenewOrReissueTests
 
         Assert.NotNull(result);
         Assert.Contains(handler.Requests,
-            req => FakeHttpMessageHandler.Is(req, "PATCH", "/certs/v1/order/prior-order-id/revoke"));
+            req => FakeHttpMessageHandler.Is(req, "PATCH", "/certs/v1/order/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/revoke"));
     }
 
     [Fact]
@@ -93,7 +93,7 @@ public class MarkMonitorCAPluginRenewOrReissueTests
     {
         var handler = BaseHandler();
         var (plugin, _, reader) = BuildPlugin(handler);
-        reader.SerialNumberToRequestId["ab:cd:ef"] = "prior-order-id";
+        reader.SerialNumberToRequestId["ab:cd:ef"] = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 
         var productInfo = new EnrollmentProductInfo
         {

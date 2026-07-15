@@ -11,13 +11,13 @@ public class MarkMonitorClientStatusMappingTests
     {
         var handler = new FakeHttpMessageHandler()
             .WithSuccessfulAuth()
-            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order/order-1"),
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order/11111111-1111-1111-1111-111111111111"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK,
-                    SampleOrders.OrderWithCert("order-1", markMonitorStatus)));
+                    SampleOrders.OrderWithCert("11111111-1111-1111-1111-111111111111", markMonitorStatus)));
         var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
         await client.AuthenticateAsync();
 
-        var result = await client.GetSingleOrderAsync("order-1");
+        var result = await client.GetSingleOrderAsync("11111111-1111-1111-1111-111111111111");
         Assert.NotNull(result);
         return result.Status;
     }

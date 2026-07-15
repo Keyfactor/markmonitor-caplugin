@@ -19,7 +19,7 @@ public class MarkMonitorClientAdditionalEmailsTests
                     SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())))
             .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
-                    SampleOrders.OrderWithCert("order-1", "CREATED")));
+                    SampleOrders.OrderWithCert("11111111-1111-1111-1111-111111111111", "CREATED")));
         var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
         await client.AuthenticateAsync();
         var config = new MarkMonitorConfig

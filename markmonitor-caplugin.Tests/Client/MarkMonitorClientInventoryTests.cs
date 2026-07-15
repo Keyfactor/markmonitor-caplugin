@@ -17,9 +17,9 @@ public class MarkMonitorClientInventoryTests
         // losing certificates from Command's inventory.
         var ordersJson = string.Join(",", new[]
         {
-            SampleOrders.OrderWithNullCert("order-pending", "CREATED"),
-            SampleOrders.OrderWithCert("order-issued-1", "DIGI_ISSUED"),
-            SampleOrders.OrderWithCert("order-issued-2", "DIGI_ISSUED")
+            SampleOrders.OrderWithNullCert("99999999-9999-9999-9999-999999999999", "CREATED"),
+            SampleOrders.OrderWithCert("77777777-7777-7777-7777-777777777777", "DIGI_ISSUED"),
+            SampleOrders.OrderWithCert("88888888-8888-8888-8888-888888888888", "DIGI_ISSUED")
         });
         var handler = new FakeHttpMessageHandler()
             .WithSuccessfulAuth()
@@ -34,8 +34,8 @@ public class MarkMonitorClientInventoryTests
         Assert.Equal(2, count);
         var collected = buffer.ToList();
         Assert.Equal(2, collected.Count);
-        Assert.DoesNotContain(collected, c => c.CARequestID == "order-pending");
-        Assert.Contains(collected, c => c.CARequestID == "order-issued-1");
-        Assert.Contains(collected, c => c.CARequestID == "order-issued-2");
+        Assert.DoesNotContain(collected, c => c.CARequestID == "99999999-9999-9999-9999-999999999999");
+        Assert.Contains(collected, c => c.CARequestID == "77777777-7777-7777-7777-777777777777");
+        Assert.Contains(collected, c => c.CARequestID == "88888888-8888-8888-8888-888888888888");
     }
 }

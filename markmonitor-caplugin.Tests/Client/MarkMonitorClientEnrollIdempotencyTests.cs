@@ -19,7 +19,7 @@ public class MarkMonitorClientEnrollIdempotencyTests
     private static int OrderCreationCount(FakeHttpMessageHandler handler) =>
         handler.Requests.Count(r => FakeHttpMessageHandler.Is(r, "POST", "/certs/v1/order"));
 
-    private static FakeHttpMessageHandler BuildHandler(string orderId = "order-1") =>
+    private static FakeHttpMessageHandler BuildHandler(string orderId = "11111111-1111-1111-1111-111111111111") =>
         new FakeHttpMessageHandler()
             .WithSuccessfulAuth()
             .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),

@@ -463,6 +463,7 @@ public class MarkMonitorClient : IDisposable
     {
         try
         {
+            ValidateOrderIdFormat(orderId);
             await EnsureAuthenticatedAsync();
 
             _httpClient.DefaultRequestHeaders.Authorization =
@@ -495,6 +496,18 @@ public class MarkMonitorClient : IDisposable
             _logger.LogError("An error has occurred: {EMessage}", e.Message);
             return null;
         }
+    }
+
+    /// <summary>
+    /// Order IDs are interpolated directly into request URLs - a corrupted or manipulated
+    /// CARequestID should fail fast with a clear error rather than silently producing an unexpected
+    /// path segment.
+    /// </summary>
+    private static void ValidateOrderIdFormat(string orderId)
+    {
+        if (!Guid.TryParse(orderId, out _))
+            throw new ArgumentException($"'{orderId}' is not a valid MarkMonitor order ID (expected a GUID)",
+                nameof(orderId));
     }
 
     private void PruneExpiredRecentEnrollments()
@@ -829,6 +842,7 @@ public class MarkMonitorClient : IDisposable
         _logger.MethodEntry();
         try
         {
+            ValidateOrderIdFormat(orderId);
             _logger.LogInformation("Revoking certificate {CertificateId}", orderId);
             await EnsureAuthenticatedAsync();
 
@@ -863,6 +877,7 @@ public class MarkMonitorClient : IDisposable
         _logger.MethodEntry();
         try
         {
+            ValidateOrderIdFormat(orderId);
             _logger.LogInformation("Revoking certificate {CertificateId}", orderId);
             await EnsureAuthenticatedAsync();
 
@@ -910,6 +925,7 @@ public class MarkMonitorClient : IDisposable
         _logger.MethodEntry();
         try
         {
+            ValidateOrderIdFormat(orderId);
             _logger.LogInformation("Revoking certificate associated with order {OrderId}", orderId);
             if (reason != 0)
                 _logger.LogWarning(

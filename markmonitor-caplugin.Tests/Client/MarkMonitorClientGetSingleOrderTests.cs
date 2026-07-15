@@ -12,16 +12,16 @@ public class MarkMonitorClientGetSingleOrderTests
     {
         var handler = new FakeHttpMessageHandler()
             .WithSuccessfulAuth()
-            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order/order-123"),
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order/55555555-5555-5555-5555-555555555555"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK,
-                    SampleOrders.OrderWithCert("order-123", "DIGI_ISSUED")));
+                    SampleOrders.OrderWithCert("55555555-5555-5555-5555-555555555555", "DIGI_ISSUED")));
         var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
         await client.AuthenticateAsync();
 
-        var result = await client.GetSingleOrderAsync("order-123");
+        var result = await client.GetSingleOrderAsync("55555555-5555-5555-5555-555555555555");
 
         Assert.NotNull(result);
-        Assert.Equal("order-123", result.CARequestID);
+        Assert.Equal("55555555-5555-5555-5555-555555555555", result.CARequestID);
         Assert.Equal((int)EndEntityStatus.GENERATED, result.Status);
         Assert.Null(result.RevocationDate);
     }
@@ -31,13 +31,13 @@ public class MarkMonitorClientGetSingleOrderTests
     {
         var handler = new FakeHttpMessageHandler()
             .WithSuccessfulAuth()
-            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order/order-456"),
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order/66666666-6666-6666-6666-666666666666"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK,
-                    SampleOrders.OrderWithCert("order-456", "DIGI_REVOKED", "REVOKED", "2026-03-01T00:00:00Z")));
+                    SampleOrders.OrderWithCert("66666666-6666-6666-6666-666666666666", "DIGI_REVOKED", "REVOKED", "2026-03-01T00:00:00Z")));
         var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
         await client.AuthenticateAsync();
 
-        var result = await client.GetSingleOrderAsync("order-456");
+        var result = await client.GetSingleOrderAsync("66666666-6666-6666-6666-666666666666");
 
         Assert.NotNull(result);
         Assert.Equal((int)EndEntityStatus.REVOKED, result.Status);

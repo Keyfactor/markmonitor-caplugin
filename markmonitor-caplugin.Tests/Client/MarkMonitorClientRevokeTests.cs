@@ -18,12 +18,12 @@ public class MarkMonitorClientRevokeTests
         // call - the actual "can't forward it" behavior is logged, not independently observable.
         var handler = new FakeHttpMessageHandler()
             .WithSuccessfulAuth()
-            .When(req => FakeHttpMessageHandler.Is(req, "PATCH", "/certs/v1/order/order-1/revoke"),
+            .When(req => FakeHttpMessageHandler.Is(req, "PATCH", "/certs/v1/order/11111111-1111-1111-1111-111111111111/revoke"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK, "{}"));
         var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
         await client.AuthenticateAsync();
 
-        var result = await client.RevokeCertificateAsync("order-1", "Test Org", reason);
+        var result = await client.RevokeCertificateAsync("11111111-1111-1111-1111-111111111111", "Test Org", reason);
 
         Assert.True(result);
     }

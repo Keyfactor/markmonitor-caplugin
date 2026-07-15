@@ -15,12 +15,12 @@ public class MarkMonitorClientCancelTests
         // is not the same as an empty JSON object as far as MarkMonitor's API is concerned.
         var handler = new FakeHttpMessageHandler()
             .WithSuccessfulAuth()
-            .When(req => FakeHttpMessageHandler.Is(req, "PATCH", "/certs/v1/order/order-1/cancel"),
+            .When(req => FakeHttpMessageHandler.Is(req, "PATCH", "/certs/v1/order/11111111-1111-1111-1111-111111111111/cancel"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK, "{}"));
         var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
         await client.AuthenticateAsync();
 
-        var result = await client.CancelCertificateAsync("order-1");
+        var result = await client.CancelCertificateAsync("11111111-1111-1111-1111-111111111111");
 
         Assert.True(result);
         var cancelRequest =
@@ -34,12 +34,12 @@ public class MarkMonitorClientCancelTests
     {
         var handler = new FakeHttpMessageHandler()
             .WithSuccessfulAuth()
-            .When(req => FakeHttpMessageHandler.Is(req, "PATCH", "/certs/v1/order/order-1/revoke"),
+            .When(req => FakeHttpMessageHandler.Is(req, "PATCH", "/certs/v1/order/11111111-1111-1111-1111-111111111111/revoke"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK, "{}"));
         var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
         await client.AuthenticateAsync();
 
-        var result = await client.RevokeCertificateAsync("order-1");
+        var result = await client.RevokeCertificateAsync("11111111-1111-1111-1111-111111111111");
 
         Assert.True(result);
         var revokeRequest =

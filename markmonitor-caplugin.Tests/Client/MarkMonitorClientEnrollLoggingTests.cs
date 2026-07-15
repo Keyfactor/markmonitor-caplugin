@@ -21,7 +21,7 @@ public class MarkMonitorClientEnrollLoggingTests
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK, SampleOrgs.OrgsListResponse(orgWithNoContacts)))
             .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
-                    SampleOrders.OrderWithCert("order-no-contact", "CREATED")));
+                    SampleOrders.OrderWithCert("22222222-2222-2222-2222-222222222222", "CREATED")));
         var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
         await client.AuthenticateAsync();
 
@@ -35,6 +35,6 @@ public class MarkMonitorClientEnrollLoggingTests
             new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), config);
 
         Assert.NotNull(result);
-        Assert.Equal("order-no-contact", result.CARequestID);
+        Assert.Equal("22222222-2222-2222-2222-222222222222", result.CARequestID);
     }
 }

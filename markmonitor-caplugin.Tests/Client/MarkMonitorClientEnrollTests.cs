@@ -51,7 +51,7 @@ public class MarkMonitorClientEnrollTests
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK, SampleOrgs.OrgWithContact()))
             .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
-                    SampleOrders.OrderWithCert("order-guid-org", "CREATED")));
+                    SampleOrders.OrderWithCert("33333333-3333-3333-3333-333333333333", "CREATED")));
         var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
         await client.AuthenticateAsync();
         var config = Config();
@@ -75,7 +75,7 @@ public class MarkMonitorClientEnrollTests
                     SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())))
             .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
-                    SampleOrders.OrderWithCert("order-name-org", "CREATED")));
+                    SampleOrders.OrderWithCert("44444444-4444-4444-4444-444444444444", "CREATED")));
         var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
         await client.AuthenticateAsync();
 

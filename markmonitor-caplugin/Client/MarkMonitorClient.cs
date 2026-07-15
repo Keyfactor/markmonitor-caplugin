@@ -156,6 +156,15 @@ public class MarkMonitorClient : IDisposable
             foreach (var certificateDetail in certificateOrders)
             {
                 _logger.LogInformation("Adding certificate {CertificateId} to buffer", certificateDetail.Id);
+
+                if (certificateDetail.Cert == null)
+                {
+                    _logger.LogWarning(
+                        "Certificate {CertificateId} has no cert details yet (status {Status}) - skipping it for this sync rather than aborting the rest of the page",
+                        certificateDetail.Id, certificateDetail.Status);
+                    continue;
+                }
+
                 var certStatus = MarkMonitorCertificateStatusToCAStatus(certificateDetail);
                 _logger.LogTrace("Certificate {CertificateId} status: {CertificateStatus}", certificateDetail.Id,
                     certStatus);

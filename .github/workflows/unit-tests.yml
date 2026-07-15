@@ -1,0 +1,35 @@
+name: Unit Tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      # markmonitor-caplugin.Tests references markmonitor-caplugin, which restores several
+      # Keyfactor.* packages from Keyfactor's private feed - not just nuget.org.
+      - name: Add Keyfactor NuGet source
+        run: |
+          dotnet nuget add source "https://pkgs.dev.azure.com/Keyfactor/_packaging/KeyfactorPackages/nuget/v3/index.json" \
+            --name keyfactor \
+            --username keyfactor \
+            --password "${{ secrets.V2BUILDTOKEN }}" \
+            --store-password-in-clear-text
+
+      - name: Run unit tests
+        run: dotnet test markmonitor-caplugin.Tests/markmonitor-caplugin.Tests.csproj --configuration Release --verbosity normal

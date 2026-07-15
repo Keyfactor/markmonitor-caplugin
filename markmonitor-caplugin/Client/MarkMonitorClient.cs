@@ -25,6 +25,15 @@ public class MarkMonitorClient : IDisposable
     private string _username;
     private readonly TimeProvider _timeProvider;
 
+    // Guards against creating a duplicate MarkMonitor order when Command retries an Enroll call
+    // whose first attempt actually succeeded server-side but whose response was lost (timeout,
+    // dropped connection, etc). Keyed on org+product+subject+CSR - an identical CSR for the same
+    // subject/org/product within the window is treated as a retry, not a distinct request. Process-
+    // local and short-lived by design: it's a guard against the specific narrow retry window, not a
+    // durable dedup store (that would need to live in MarkMonitor itself).
+    private static readonly TimeSpan RecentEnrollmentWindow = TimeSpan.FromMinutes(5);
+    private readonly ConcurrentDictionary<string, (DateTime ExpiresAtUtc, EnrollmentResult Result)> _recentEnrollments = new();
+
     public MarkMonitorClient(string baseUrl, string apiKey, string username, string password, bool validateSsl = true,
         HttpMessageHandler handler = null, TimeProvider timeProvider = null)
     {
@@ -487,6 +496,14 @@ public class MarkMonitorClient : IDisposable
         }
     }
 
+    private void PruneExpiredRecentEnrollments()
+    {
+        var now = _timeProvider.GetUtcNow().UtcDateTime;
+        foreach (var key in _recentEnrollments.Keys)
+            if (_recentEnrollments.TryGetValue(key, out var entry) && entry.ExpiresAtUtc <= now)
+                _recentEnrollments.TryRemove(key, out _);
+    }
+
     private string getCsrAlgorithm(Pkcs10CertificationRequest csr)
     {
         var signatureAlgorithm = csr.SignatureAlgorithm.Algorithm.Id;
@@ -511,6 +528,16 @@ public class MarkMonitorClient : IDisposable
         try
         {
             await EnsureAuthenticatedAsync();
+
+            var dedupeKey = $"{config.OrgName}|{orderType}|{subject}|{csr}";
+            PruneExpiredRecentEnrollments();
+            if (_recentEnrollments.TryGetValue(dedupeKey, out var recent))
+            {
+                _logger.LogWarning(
+                    "An identical enrollment for subject {Subject} was already submitted in the last {Minutes} minute(s) - returning the existing order {CARequestID} instead of creating a duplicate",
+                    subject, RecentEnrollmentWindow.TotalMinutes, recent.Result.CARequestID);
+                return recent.Result;
+            }
 
             var caseInsensitiveParams = new Dictionary<string, string>(productParams, StringComparer.OrdinalIgnoreCase);
 
@@ -654,13 +681,16 @@ public class MarkMonitorClient : IDisposable
             if (order == null) throw new Exception($"Failed to enroll certificate `{subject}` with MarkMonitor");
 
             _logger.LogInformation("Certificate enrolled successfully");
-            return new EnrollmentResult
+            var enrollmentResult = new EnrollmentResult
             {
                 CARequestID = order.Id,
                 Certificate = order.Cert?.EndEntityCert,
                 Status = MarkMonitorCertificateStatusToCAStatus(order),
                 StatusMessage = "MarkMonitor order status: " + order.Status
             };
+            _recentEnrollments[dedupeKey] =
+                (_timeProvider.GetUtcNow().UtcDateTime + RecentEnrollmentWindow, enrollmentResult);
+            return enrollmentResult;
         }
         catch (Exception e)
         {

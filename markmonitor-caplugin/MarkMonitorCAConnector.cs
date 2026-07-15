@@ -351,6 +351,13 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         _logger.MethodExit();
     }
 
+    // Considered validating MarkmonitorContact/MarkmonitorGroup here eagerly (at template-save
+    // time) instead of the current behavior - a typo'd value logs a warning and silently falls back
+    // to a default at enroll time. Deferred: doing so would mean making live MarkMonitor API calls
+    // during template save (no other Validate* method in this codebase does that), coupling template
+    // configuration to MarkMonitor's availability/latency, and duplicating the resolution logic
+    // that already lives in EnrollCertificateAsync. That's a real product tradeoff (fail fast on
+    // template save vs. graceful degradation at enroll time) rather than a straightforward bug fix.
     public Task ValidateProductInfo(EnrollmentProductInfo productInfo, Dictionary<string, object> connectionInfo)
     {
         _logger.MethodEntry();

@@ -1102,11 +1102,15 @@ public class MarkMonitorClient : IDisposable
             order.Status.Equals(OrderStatus.Created.GetDescription(), StringComparison.OrdinalIgnoreCase)
         )
         {
-            _logger.LogInformation("MarkMonitor order {OrderId} status 'INITIALIZED'", order.Id);
-            _logger.LogInformation(
-                "MarkMonitor order {OrderId} may still be in process and/or require manual intervention", order.Id);
+            // EndEntityStatus.INITIALIZED is not what the AnyGatewayREST framework treats as
+            // "accepted, still pending" - that's EXTERNALVALIDATION. Returning INITIALIZED here
+            // caused the gateway to report a hard enrollment failure for an order that had, in
+            // fact, been created successfully at MarkMonitor and was simply awaiting DCV/issuance
+            // (confirmed against a real AnyGatewayREST + Command deployment - github issue #2).
+            _logger.LogInformation("MarkMonitor order {OrderId} status 'CREATED' - pending external validation",
+                order.Id);
             _logger.MethodExit();
-            return (int)EndEntityStatus.INITIALIZED;
+            return (int)EndEntityStatus.EXTERNALVALIDATION;
         }
 
         _logger.LogError("MarkMonitor order {OrderId} status could not be dettermined defaulting to 'FAILED'",

@@ -421,13 +421,16 @@ public class MarkMonitorClient
             else
                 throw new Exception(BuildErrorString(content));
 
+            DateTime? revocationDate = null;
+            if (order.Cert.RevokeStatus == "REVOKED") revocationDate = Convert.ToDateTime(order.Cert.DateValidUntil);
+
             return new AnyCAPluginCertificate
             {
                 CARequestID = order.Id,
                 Certificate = order.Cert.EndEntityCert,
                 Status = MarkMonitorCertificateStatusToCAStatus(order),
                 ProductID = order.CertType,
-                RevocationDate = Convert.ToDateTime(order.Cert.DaysRemaining)
+                RevocationDate = revocationDate
             };
         }
         catch (Exception e)

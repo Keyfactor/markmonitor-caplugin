@@ -1140,15 +1140,6 @@ public class MarkMonitorClient : IDisposable
         _logger.MethodExit();
         return (int)EndEntityStatus.FAILED;
     }
-    //
-    // private static int MarkMonitorCertificateStatusToCAStatus(Certificate cert)
-    // {
-    //     if (cert.RevokedAt != null) return (int)EndEntityStatus.REVOKED;
-    //
-    //     if (cert.HasCertificate && cert.IsValid) return (int)EndEntityStatus.GENERATED;
-    //
-    //     return (int)EndEntityStatus.FAILED;
-    // }
 }
 
 public class ConfigurationValidationException : Exception

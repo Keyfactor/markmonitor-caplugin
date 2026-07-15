@@ -34,9 +34,6 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
     private MarkMonitorClient _cachedClient;
     private readonly SemaphoreSlim _clientLock = new(1, 1);
 
-
-    private Dictionary<int, string> DCVTokens { get; } = new();
-
     public MarkMonitorCAPlugin()
     {
         // Explicit default constructor

@@ -56,9 +56,4 @@ public class MarkMonitorConfig
     /// </summary>
     [JsonProperty(MarkMonitorCAPluginConfig.ConfigConstants.Enabled)]
     public bool Enabled { get; set; }
-
-    /// <summary>
-    /// The client identifier for the MarkMonitor API client.
-    /// </summary>
-    public string MarkMonitorApiClient { get; set; }
 }

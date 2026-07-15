@@ -56,6 +56,15 @@ internal abstract class Program
         rsaCsrs.AddRange(eccCsrs);
         // rsaCsrs.AddRange(dsaCsrs);
 
+        // Every order this console creates is a real, billable MarkMonitor order. By default we
+        // clean each one up (cancel, falling back to revoke) right after creating it so repeated
+        // test runs don't rack up charges. Set MARKMONITOR_SKIP_CLEANUP=true to opt out and leave
+        // created orders in place (e.g. to inspect them manually in the MarkMonitor portal).
+        var skipCleanup = IsTruthy(Environment.GetEnvironmentVariable("MARKMONITOR_SKIP_CLEANUP"));
+        if (skipCleanup)
+            Console.WriteLine(
+                "MARKMONITOR_SKIP_CLEANUP is set - orders created by this run will NOT be cancelled/revoked automatically.");
+
         var orders = new List<string>();
         foreach (var (csr, _, _) in rsaCsrs)
         {
@@ -90,6 +99,8 @@ internal abstract class Program
             if (enrollResult == null) throw new Exception("EnrollCertificateAsync returned null");
             Console.WriteLine($"Created certificate order: {enrollResult.CARequestID} (status: {enrollResult.Status})");
             orders.Add(enrollResult.CARequestID);
+
+            if (!skipCleanup) await CleanUpOrderAsync(client, enrollResult.CARequestID);
         }
 
         Console.WriteLine("Tests completed successfully with orders: " + orders.Count);
@@ -293,6 +304,38 @@ internal abstract class Program
     //     }
     // }
     //
+    /// <summary>
+    /// Best-effort cleanup for a real, billable MarkMonitor order this console just created. Tries
+    /// cancel first (orders created here are freshly submitted and never reach an issued state
+    /// before this runs), falling back to revoke in case the order somehow issued instantly. A
+    /// cleanup failure is logged, not thrown - it shouldn't fail the whole test run, but it should
+    /// be visible so the order can be cleaned up manually in the MarkMonitor portal.
+    /// </summary>
+    private static async Task CleanUpOrderAsync(MarkMonitorClient client, string orderId)
+    {
+        try
+        {
+            await client.CancelCertificateAsync(orderId);
+            Console.WriteLine($"Cancelled order {orderId}.");
+        }
+        catch (Exception cancelEx)
+        {
+            try
+            {
+                await client.RevokeCertificateAsync(orderId);
+                Console.WriteLine($"Order {orderId} could not be cancelled ({cancelEx.Message}); revoked it instead.");
+            }
+            catch (Exception revokeEx)
+            {
+                Console.WriteLine(
+                    $"WARNING: could not cancel or revoke order {orderId} - it may still incur charges and should be cleaned up manually. Cancel error: {cancelEx.Message}; Revoke error: {revokeEx.Message}");
+            }
+        }
+    }
+
+    private static bool IsTruthy(string? value) =>
+        value is not null && (value.Equals("true", StringComparison.OrdinalIgnoreCase) || value == "1");
+
     private static async Task<Dictionary<string, OrderContent>> TestListCertificateOrders(string baseUrl,
         string apiToken, string username, string password)
     {

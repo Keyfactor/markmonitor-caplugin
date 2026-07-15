@@ -14,7 +14,7 @@ public class FakeCertificateDataReader : ICertificateDataReader
         Task.FromResult(RequestIdToStatus.ContainsKey(caRequestID));
 
     public Task<string> GetRequestIDBySerialNumber(string serialNumber) =>
-        Task.FromResult(SerialNumberToRequestId.GetValueOrDefault(serialNumber));
+        Task.FromResult(SerialNumberToRequestId.GetValueOrDefault(serialNumber, string.Empty));
 
     public DateTime? GetExpirationDateByRequestId(string caRequestID) => null;
 }

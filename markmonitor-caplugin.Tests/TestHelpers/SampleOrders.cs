@@ -3,7 +3,7 @@ namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.TestHelpers;
 /// <summary>Builds minimal-but-valid MarkMonitor order JSON fragments for tests.</summary>
 public static class SampleOrders
 {
-    public static string OrderWithCert(string id, string status, string revokeStatus = null,
+    public static string OrderWithCert(string id, string status, string? revokeStatus = null,
         string dateValidUntil = "2027-01-01T00:00:00Z", string certType = "SSL_DV_GEOTRUST") =>
         $$"""
           {

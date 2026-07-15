@@ -607,7 +607,7 @@ public class MarkMonitorClient
         catch (Exception e)
         {
             _logger.LogError("An error has occurred: {EMessage}", e.Message);
-            return null;
+            throw;
         }
         finally
         {

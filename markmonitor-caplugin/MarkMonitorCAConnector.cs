@@ -199,11 +199,6 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             var enrollResult = await client.EnrollCertificateAsync(csr, subject, san, productInfo.ProductID,
                 productInfo.ProductParameters, _config);
 
-            if (enrollResult == null)
-            {
-                _logger.LogError("Enrollment failed for subject: {Subject}", subject);
-                throw new Exception($"Enrollment failed for subject: {subject}");
-            }
             _logger.LogTrace("Enrollment result: {EnrollResult}", JsonConvert.SerializeObject(enrollResult));
             _logger.LogInformation("Enrollment completed successfully for subject: {Subject}", subject);
             

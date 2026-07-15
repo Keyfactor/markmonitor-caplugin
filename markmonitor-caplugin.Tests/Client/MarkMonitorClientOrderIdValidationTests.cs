@@ -42,4 +42,19 @@ public class MarkMonitorClientOrderIdValidationTests
 
         Assert.DoesNotContain(handler.Requests, r => FakeHttpMessageHandler.Is(r, "PATCH", "/revoke"));
     }
+
+    [Fact]
+    public async Task GetOrganizationAsync_WithNonGuidOrgId_ReturnsNullWithoutMakingARequest()
+    {
+        // GetOrganizationAsync's URL interpolates orgId directly (/certs/v1/organization/{orgId}),
+        // same class of injection risk ValidateGuidFormat already guards against for order IDs.
+        var handler = new FakeHttpMessageHandler().WithSuccessfulAuth();
+        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        await client.AuthenticateAsync();
+
+        var result = await client.GetOrganizationAsync(NotAGuid);
+
+        Assert.Null(result);
+        Assert.DoesNotContain(handler.Requests, r => FakeHttpMessageHandler.Is(r, "GET", "/organization/"));
+    }
 }

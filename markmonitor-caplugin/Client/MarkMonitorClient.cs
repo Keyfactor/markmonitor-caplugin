@@ -401,6 +401,7 @@ public class MarkMonitorClient : IDisposable
         _logger.MethodEntry();
         try
         {
+            ValidateGuidFormat(orgId, nameof(orgId), "MarkMonitor organization ID");
             await EnsureAuthenticatedAsync();
             var url = $"{BaseUrl}/certs/v1/organization/{orgId}";
             _logger.LogDebug("Getting organization from MarkMonitor {Url}", url);
@@ -472,7 +473,7 @@ public class MarkMonitorClient : IDisposable
     /// organization before revoking it).</summary>
     private async Task<OrderContent> FetchOrderAsync(string orderId)
     {
-        ValidateOrderIdFormat(orderId);
+        ValidateGuidFormat(orderId, nameof(orderId), "MarkMonitor order ID");
         await EnsureAuthenticatedAsync();
 
         _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _bearerToken);
@@ -528,11 +529,10 @@ public class MarkMonitorClient : IDisposable
     /// CARequestID should fail fast with a clear error rather than silently producing an unexpected
     /// path segment.
     /// </summary>
-    private static void ValidateOrderIdFormat(string orderId)
+    private static void ValidateGuidFormat(string value, string paramName, string description)
     {
-        if (!Guid.TryParse(orderId, out _))
-            throw new ArgumentException($"'{orderId}' is not a valid MarkMonitor order ID (expected a GUID)",
-                nameof(orderId));
+        if (!Guid.TryParse(value, out _))
+            throw new ArgumentException($"'{value}' is not a valid {description} (expected a GUID)", paramName);
     }
 
     private string getCsrAlgorithm(Pkcs10CertificationRequest csr)
@@ -913,7 +913,7 @@ public class MarkMonitorClient : IDisposable
         _logger.MethodEntry();
         try
         {
-            ValidateOrderIdFormat(orderId);
+            ValidateGuidFormat(orderId, nameof(orderId), "MarkMonitor order ID");
             _logger.LogInformation("Revoking certificate {CertificateId}", orderId);
             await EnsureAuthenticatedAsync();
 
@@ -948,7 +948,7 @@ public class MarkMonitorClient : IDisposable
         _logger.MethodEntry();
         try
         {
-            ValidateOrderIdFormat(orderId);
+            ValidateGuidFormat(orderId, nameof(orderId), "MarkMonitor order ID");
             _logger.LogInformation("Revoking certificate {CertificateId}", orderId);
             await EnsureAuthenticatedAsync();
 
@@ -996,7 +996,7 @@ public class MarkMonitorClient : IDisposable
         _logger.MethodEntry();
         try
         {
-            ValidateOrderIdFormat(orderId);
+            ValidateGuidFormat(orderId, nameof(orderId), "MarkMonitor order ID");
             _logger.LogInformation("Revoking certificate associated with order {OrderId}", orderId);
             if (reason != 0)
                 _logger.LogWarning(

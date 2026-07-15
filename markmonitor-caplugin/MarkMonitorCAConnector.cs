@@ -208,7 +208,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             _logger.LogInformation("Enrollment completed successfully for subject: {Subject}", subject);
 
             if (enrollmentType == EnrollmentType.RenewOrReissue)
-                await RevokePriorCertificateIfPresentAsync(client, productInfo, subject);
+                await RevokePriorCertificateIfPresentAsync(client, productInfo, subject, enrollResult.CARequestID);
 
             return enrollResult;
         }
@@ -232,7 +232,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
     /// revoke the old certificate should not fail delivery of the new one.
     /// </summary>
     private async Task RevokePriorCertificateIfPresentAsync(MarkMonitorClient client,
-        EnrollmentProductInfo productInfo, string subject)
+        EnrollmentProductInfo productInfo, string subject, string newCaRequestId)
     {
         var priorCertSn = productInfo.ProductParameters?
             .FirstOrDefault(kv => string.Equals(kv.Key, "PriorCertSN", StringComparison.OrdinalIgnoreCase)).Value;
@@ -257,14 +257,15 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         try
         {
             _logger.LogInformation(
-                "Revoking prior certificate {PriorRequestId} (serial {PriorCertSn}) after successful renewal",
-                priorRequestId, priorCertSn);
+                "Revoking prior certificate {PriorRequestId} (serial {PriorCertSn}) after it was replaced by {NewCaRequestId}",
+                priorRequestId, priorCertSn, newCaRequestId);
             await client.RevokeCertificateAsync(priorRequestId, _config.OrgName);
         }
         catch (Exception e)
         {
-            _logger.LogError("Failed to revoke prior certificate {PriorRequestId}: {EMessage}", priorRequestId,
-                e.Message);
+            _logger.LogError(
+                "Failed to revoke prior certificate {PriorRequestId} after it was replaced by {NewCaRequestId}: {EMessage}",
+                priorRequestId, newCaRequestId, e.Message);
         }
     }
 

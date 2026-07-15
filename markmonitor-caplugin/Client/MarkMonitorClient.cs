@@ -109,7 +109,7 @@ public class MarkMonitorClient : IDisposable
         if (!isValid) throw new ConfigurationValidationException("Invalid configuration");
 
         _logger.LogDebug("Setting \"X-API-KEY\" header");
-        
+        _httpClient.DefaultRequestHeaders.Remove("X-API-KEY");
         _httpClient.DefaultRequestHeaders.Add("X-API-KEY", _apiKey);
         var requestBody = new TokenRequest
         {

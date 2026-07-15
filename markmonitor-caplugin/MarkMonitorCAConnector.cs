@@ -357,13 +357,15 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         _logger.MethodEntry();
         try
         {
-            var client = new MarkMonitorClient(
-                _config.BaseUrl,
-                _config.ApiKey,
-                _config.ApiUsername,
-                _config.ApiPassword,
-                true
-            );
+            var client = _markMonitorClientWasInjected
+                ? Client
+                : new MarkMonitorClient(
+                    _config.BaseUrl,
+                    _config.ApiKey,
+                    _config.ApiUsername,
+                    _config.ApiPassword,
+                    true
+                );
             _logger.LogDebug("Authenticating with MarkMonitor API");
             _logger.LogTrace("MarkMonitor API Username: {Username}", _config.ApiUsername);
             await client.AuthenticateAsync();

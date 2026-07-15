@@ -23,7 +23,8 @@ public class MarkMonitorClient
     private string _password;
     private string _username;
 
-    public MarkMonitorClient(string baseUrl, string apiKey, string username, string password, bool validateSsl = true)
+    public MarkMonitorClient(string baseUrl, string apiKey, string username, string password, bool validateSsl = true,
+        HttpMessageHandler handler = null)
     {
         BaseUrl = baseUrl;
         _logger = LogHandler.GetClassLogger(GetType());
@@ -31,17 +32,22 @@ public class MarkMonitorClient
         _username = username;
         _password = password;
 
-        var handler = new HttpClientHandler { UseCookies = false };
-
-        if (!validateSsl)
+        // A caller-supplied handler (e.g. a fake in tests) is used as-is; otherwise build the real
+        // HttpClientHandler with the usual SSL validation behavior.
+        if (handler == null)
         {
-            _logger.LogWarning("SSL certificate validation is disabled for {BaseUrl}", baseUrl);
-            handler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true;
+            var httpClientHandler = new HttpClientHandler { UseCookies = false };
+
+            if (!validateSsl)
+            {
+                _logger.LogWarning("SSL certificate validation is disabled for {BaseUrl}", baseUrl);
+                httpClientHandler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true;
+            }
+
+            handler = httpClientHandler;
         }
 
-
         _httpClient = new HttpClient(handler);
-        // _ = AuthenticateAsync();
     }
 
     public string BaseUrl { get; }

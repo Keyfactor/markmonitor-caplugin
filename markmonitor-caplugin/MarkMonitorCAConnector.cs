@@ -106,6 +106,12 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             _logger.LogInformation("Order details retrieved for CARequestID: {CARequestID}", caRequestId);
             return order;
         }
+        catch (Exception e)
+        {
+            _logger.LogError("Failed to get order details for CARequestID {CARequestID}: {EMessage}", caRequestId,
+                e.Message);
+            throw;
+        }
         finally
         {
             _logger.MethodExit();
@@ -203,8 +209,13 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
 
             _logger.LogTrace("Enrollment result: {EnrollResult}", JsonConvert.SerializeObject(enrollResult));
             _logger.LogInformation("Enrollment completed successfully for subject: {Subject}", subject);
-            
+
             return enrollResult;
+        }
+        catch (Exception e)
+        {
+            _logger.LogError("Enrollment failed for subject {Subject}: {EMessage}", subject, e.Message);
+            throw;
         }
         finally
         {

@@ -115,7 +115,6 @@ public class MarkMonitorClient : IDisposable
             new StringContent(JsonConvert.SerializeObject(requestBody), Encoding.UTF8, "application/json"));
 
         _logger.LogDebug("Reading authentication response");
-        response.EnsureSuccessStatusCode();
         var content = await response.Content.ReadAsStringAsync();
 
         _logger.LogTrace("Authentication response code: {ResponseCode}", response.StatusCode);

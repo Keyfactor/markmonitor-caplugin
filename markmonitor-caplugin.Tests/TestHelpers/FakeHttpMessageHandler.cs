@@ -14,7 +14,7 @@ public sealed class FakeHttpMessageHandler : HttpMessageHandler
     private sealed class Route
     {
         public required Func<HttpRequestMessage, bool> Matches;
-        public required Queue<Func<HttpRequestMessage, HttpResponseMessage>> Responses;
+        public required Queue<Func<HttpRequestMessage, Task<HttpResponseMessage>>> Responses;
     }
 
     private readonly List<Route> _routes = new();
@@ -22,16 +22,36 @@ public sealed class FakeHttpMessageHandler : HttpMessageHandler
 
     public FakeHttpMessageHandler When(Func<HttpRequestMessage, bool> matches, params HttpResponseMessage[] responses)
     {
+        return WhenAsync(matches,
+            responses.Select(r => (Func<HttpRequestMessage, Task<HttpResponseMessage>>)(_ => Task.FromResult(r)))
+                .ToArray());
+    }
+
+    /// <summary>Like When(), but the response is produced asynchronously - e.g. via WhenGated() to
+    /// hold a response open until a test explicitly releases it, for exercising genuine
+    /// concurrency/in-flight-request behavior.</summary>
+    public FakeHttpMessageHandler WhenAsync(Func<HttpRequestMessage, bool> matches,
+        params Func<HttpRequestMessage, Task<HttpResponseMessage>>[] responseFactories)
+    {
         _routes.Add(new Route
         {
             Matches = matches,
-            Responses = new Queue<Func<HttpRequestMessage, HttpResponseMessage>>(
-                responses.Select(r => (Func<HttpRequestMessage, HttpResponseMessage>)(_ => r)))
+            Responses = new Queue<Func<HttpRequestMessage, Task<HttpResponseMessage>>>(responseFactories)
         });
         return this;
     }
 
-    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+    /// <summary>Registers a response that isn't returned until `gate` completes, so a test can hold
+    /// a request "in flight" for as long as it needs before releasing the response.</summary>
+    public FakeHttpMessageHandler WhenGated(Func<HttpRequestMessage, bool> matches, Task gate,
+        HttpResponseMessage response) =>
+        WhenAsync(matches, async _ =>
+        {
+            await gate;
+            return response;
+        });
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
         Requests.Add(request);
@@ -42,7 +62,7 @@ public sealed class FakeHttpMessageHandler : HttpMessageHandler
             throw new InvalidOperationException($"No fake response registered for {request.Method} {request.RequestUri}");
 
         var factory = route.Responses.Count > 1 ? route.Responses.Dequeue() : route.Responses.Peek();
-        return Task.FromResult(factory(request));
+        return await factory(request);
     }
 
     public static bool Is(HttpRequestMessage req, string method, string pathFragment) =>

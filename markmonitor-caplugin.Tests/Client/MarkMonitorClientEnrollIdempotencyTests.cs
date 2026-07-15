@@ -80,4 +80,77 @@ public class MarkMonitorClientEnrollIdempotencyTests
 
         Assert.Equal(2, OrderCreationCount(handler));
     }
+
+    [Fact]
+    public async Task EnrollCertificateAsync_RetriedWhileTheFirstCallIsStillInFlight_OnlyCreatesOneOrder()
+    {
+        // The scenario this cache actually exists for: Command's retry doesn't wait for the first
+        // attempt to finish (or fail) - it can arrive while the original CreateCertificateOrder call
+        // is still in flight. Holds the order-creation response open with a gate so both calls are
+        // genuinely concurrent, rather than sequential.
+        var orderResponseGate = new TaskCompletionSource();
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())))
+            .WhenGated(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"), orderResponseGate.Task,
+                FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
+                    SampleOrders.OrderWithCert("11111111-1111-1111-1111-111111111111", "CREATED")));
+        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        await client.AuthenticateAsync();
+
+        var firstCall = client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
+
+        // Give the first call a chance to actually reach (and dispatch) the gated POST /order request
+        // before starting the "retry".
+        await WaitUntil(() => OrderCreationCount(handler) == 1);
+
+        var secondCall = client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
+
+        orderResponseGate.SetResult();
+        var results = await Task.WhenAll(firstCall, secondCall);
+
+        Assert.Equal(1, OrderCreationCount(handler));
+        Assert.Equal(results[0].CARequestID, results[1].CARequestID);
+    }
+
+    [Fact]
+    public async Task EnrollCertificateAsync_WhenTheFirstAttemptFails_ARetryGetsAFreshAttemptRatherThanTheCachedFailure()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())))
+            .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.InternalServerError,
+                    """{"errors":[{"code":"request.genericError","message":"An unexpected error occurred."}]}"""),
+                FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
+                    SampleOrders.OrderWithCert("11111111-1111-1111-1111-111111111111", "CREATED")));
+        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        await client.AuthenticateAsync();
+
+        await Assert.ThrowsAsync<Exception>(() => client.EnrollCertificateAsync(SampleCsr.Pem,
+            "CN=test.mmcertdomain.com", new Dictionary<string, string[]>(), "SslDvGeotrust",
+            new Dictionary<string, string>(), Config()));
+
+        var retryResult = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
+
+        Assert.NotNull(retryResult);
+        Assert.Equal(2, OrderCreationCount(handler));
+    }
+
+    private static async Task WaitUntil(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!condition())
+        {
+            if (DateTime.UtcNow > deadline) throw new TimeoutException("Condition was never met.");
+            await Task.Delay(5);
+        }
+    }
 }

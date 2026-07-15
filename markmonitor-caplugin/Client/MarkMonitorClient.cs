@@ -26,14 +26,19 @@ public class MarkMonitorClient : IDisposable
     private string _username;
     private readonly TimeProvider _timeProvider;
 
-    // Guards against creating a duplicate MarkMonitor order when Command retries an Enroll call
-    // whose first attempt actually succeeded server-side but whose response was lost (timeout,
-    // dropped connection, etc). Keyed on org+product+subject+CSR - an identical CSR for the same
-    // subject/org/product within the window is treated as a retry, not a distinct request. Process-
-    // local and short-lived by design: it's a guard against the specific narrow retry window, not a
-    // durable dedup store (that would need to live in MarkMonitor itself).
+    // Guards against creating a duplicate MarkMonitor order when Command retries an Enroll call -
+    // whether the first attempt is still in flight (the retry races it) or already finished but its
+    // response was lost (timeout, dropped connection, etc). Keyed on org+product+subject+CSR - an
+    // identical CSR for the same subject/org/product within the window is treated as a retry, not a
+    // distinct request. The value is reserved (via a TaskCompletionSource) *before* the real
+    // CreateCertificateOrder call starts, so a retry that arrives while the first call is still
+    // in-flight awaits the same in-progress result instead of starting a second order. Process-local
+    // and short-lived by design: it's a guard against the specific narrow retry window, not a durable
+    // dedup store (that would need to live in MarkMonitor itself).
     private static readonly TimeSpan RecentEnrollmentWindow = TimeSpan.FromMinutes(5);
-    private readonly ConcurrentDictionary<string, (DateTime ExpiresAtUtc, EnrollmentResult Result)> _recentEnrollments = new();
+
+    private readonly ConcurrentDictionary<string, (DateTime ExpiresAtUtc, TaskCompletionSource<EnrollmentResult> Tcs)>
+        _recentEnrollments = new();
 
     public MarkMonitorClient(string baseUrl, string apiKey, string username, string password, bool validateSsl = true,
         HttpMessageHandler handler = null, TimeProvider timeProvider = null)
@@ -511,14 +516,6 @@ public class MarkMonitorClient : IDisposable
                 nameof(orderId));
     }
 
-    private void PruneExpiredRecentEnrollments()
-    {
-        var now = _timeProvider.GetUtcNow().UtcDateTime;
-        foreach (var key in _recentEnrollments.Keys)
-            if (_recentEnrollments.TryGetValue(key, out var entry) && entry.ExpiresAtUtc <= now)
-                _recentEnrollments.TryRemove(key, out _);
-    }
-
     private string getCsrAlgorithm(Pkcs10CertificationRequest csr)
     {
         var signatureAlgorithm = csr.SignatureAlgorithm.Algorithm.Id;
@@ -540,19 +537,42 @@ public class MarkMonitorClient : IDisposable
         MarkMonitorConfig config)
     {
         _logger.MethodEntry();
+        var dedupeKey = $"{config.OrgName}|{orderType}|{subject}|{csr}";
+        TaskCompletionSource<EnrollmentResult> ownedReservation = null;
         try
         {
             await EnsureAuthenticatedAsync();
 
-            var dedupeKey = $"{config.OrgName}|{orderType}|{subject}|{csr}";
-            PruneExpiredRecentEnrollments();
-            if (_recentEnrollments.TryGetValue(dedupeKey, out var recent))
+            var now = _timeProvider.GetUtcNow().UtcDateTime;
+            if (_recentEnrollments.TryGetValue(dedupeKey, out var existing) && existing.ExpiresAtUtc > now)
             {
                 _logger.LogWarning(
-                    "An identical enrollment for subject {Subject} was already submitted in the last {Minutes} minute(s) - returning the existing order {CARequestID} instead of creating a duplicate",
-                    subject, RecentEnrollmentWindow.TotalMinutes, recent.Result.CARequestID);
-                return recent.Result;
+                    "An identical enrollment for subject {Subject} was already submitted in the last {Minutes} minute(s) - awaiting that result instead of creating a duplicate order",
+                    subject, RecentEnrollmentWindow.TotalMinutes);
+                return await existing.Tcs.Task;
             }
+
+            // Reserve this key *before* doing any real work, so a retry that arrives while this
+            // call is still in flight (the scenario this cache actually exists to prevent) finds
+            // the reservation and awaits it, rather than racing to create a second order.
+            var candidateTcs =
+                new TaskCompletionSource<EnrollmentResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+            // AddOrUpdate, not GetOrAdd: an expired entry must be replaced, not returned as-is -
+            // GetOrAdd would hand back the stale (already-completed) reservation forever once one
+            // exists for this key.
+            var reserved = _recentEnrollments.AddOrUpdate(
+                dedupeKey,
+                (now + RecentEnrollmentWindow, candidateTcs),
+                (_, current) => current.ExpiresAtUtc > now ? current : (now + RecentEnrollmentWindow, candidateTcs));
+            if (reserved.Tcs != candidateTcs)
+            {
+                _logger.LogWarning(
+                    "An identical enrollment for subject {Subject} is already in flight - awaiting that result instead of creating a duplicate order",
+                    subject);
+                return await reserved.Tcs.Task;
+            }
+
+            ownedReservation = candidateTcs;
 
             var caseInsensitiveParams = new Dictionary<string, string>(productParams, StringComparer.OrdinalIgnoreCase);
 
@@ -577,7 +597,9 @@ public class MarkMonitorClient : IDisposable
             {
                 var orgs = await ListOrganizationsAsync(0, 1, config.OrgName);
                 _logger.LogTrace("Organizations found: {@Orgs}", orgs);
-                org = orgs?.FirstOrDefault();
+                // ListOrganizationsAsync throws rather than returning null on error, so orgs is
+                // never null here - just possibly empty.
+                org = orgs.FirstOrDefault();
             }
 
             var orgId = org?.Id;
@@ -719,13 +741,20 @@ public class MarkMonitorClient : IDisposable
                 Status = MarkMonitorCertificateStatusToCAStatus(order),
                 StatusMessage = "MarkMonitor order status: " + order.Status
             };
-            _recentEnrollments[dedupeKey] =
-                (_timeProvider.GetUtcNow().UtcDateTime + RecentEnrollmentWindow, enrollmentResult);
+            ownedReservation.SetResult(enrollmentResult);
             return enrollmentResult;
         }
         catch (Exception e)
         {
             _logger.LogError("An error has occurred: {EMessage}", e.Message);
+            if (ownedReservation != null)
+            {
+                // Don't cache a failed attempt - a retry after a real failure should get a fresh
+                // attempt, not be stuck replaying this exception until the window expires.
+                ownedReservation.SetException(e);
+                _recentEnrollments.TryRemove(dedupeKey, out _);
+            }
+
             throw;
         }
         finally

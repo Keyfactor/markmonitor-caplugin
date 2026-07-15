@@ -8,6 +8,6 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\markmonitor-cagateway\markmonitor-cagateway.csproj"/>
+        <ProjectReference Include="..\markmonitor-caplugin\markmonitor-caplugin.csproj" />
     </ItemGroup>
 </Project>

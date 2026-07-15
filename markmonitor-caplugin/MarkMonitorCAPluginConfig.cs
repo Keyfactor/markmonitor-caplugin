@@ -1,4 +1,4 @@
-﻿// Copyright 2024 Keyfactor
+﻿// Copyright 2025 Keyfactor
 // 
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,8 +17,15 @@ using Newtonsoft.Json;
 
 namespace Keyfactor.Extensions.CAPlugin.MarkMonitor;
 
+/// <summary>
+/// Provides configuration and annotation details for the MarkMonitor CA Plugin.
+/// </summary>
 public class MarkMonitorCAPluginConfig
 {
+    /// <summary>
+    /// Returns a dictionary of plugin configuration property annotations.
+    /// </summary>
+    /// <returns>Dictionary mapping property names to their configuration info.</returns>
     public static Dictionary<string, PropertyConfigInfo> GetPluginAnnotations()
     {
         return new Dictionary<string, PropertyConfigInfo>
@@ -71,6 +78,10 @@ public class MarkMonitorCAPluginConfig
         };
     }
 
+    /// <summary>
+    /// Returns a dictionary of template parameter annotations for certificate enrollment.
+    /// </summary>
+    /// <returns>Dictionary mapping template parameter names to their configuration info.</returns>
     public static Dictionary<string, PropertyConfigInfo> GetTemplateParameterAnnotations()
     {
         return new Dictionary<string, PropertyConfigInfo>
@@ -95,119 +106,146 @@ public class MarkMonitorCAPluginConfig
                 Hidden = false,
                 DefaultValue = "",
                 Type = "String"
+            },
+            [EnrollmentConfigConstants.AdditionalEmails] = new()
+            {
+                Comments =
+                    "List of 0 or more comma separated email addresses to send the certificate to via email after generation.",
+                Hidden = false,
+                DefaultValue = "",
+                Type = "String"
+            },
+            [EnrollmentConfigConstants.MarkmonitorGroup] = new()
+            {
+                Comments = "The name or GUID of a Markmonitor group to use for the certificate request.",
+                Hidden = false,
+                DefaultValue = "",
+                Type = "String"
+            },
+            [EnrollmentConfigConstants.MarkmonitorContact] = new()
+            {
+                Comments =
+                    "The name or GUID of a Markmonitor contact to use for the certificate request. Will use default Markmonitor organization contact if not specified.",
+                Hidden = false,
+                DefaultValue = "",
+                Type = "String"
+            },
+            [EnrollmentConfigConstants.DCVMethod] = new()
+            {
+                Comments =
+                    "The method to use for Domain Control Validation (DCV). Valid values are EMAIL, DNS_CNAME_TOKEN, HTTP_TOKEN, DNS_TXT_TOKEN. Default is EMAIL.",
+                Hidden = false,
+                DefaultValue = "EMAIL",
+                Type = "String"
             }
-            // [EnrollmentConfigConstants.OrganizationAddress] = new()
-            // {
-            //     Comments = "Address of the organization to be validated against",
-            //     Hidden = false,
-            //     DefaultValue = "",
-            //     Type = "String"
-            // },
-            // [EnrollmentConfigConstants.OrganizationCity] = new()
-            // {
-            //     Comments = "City of the organization to be validated against",
-            //     Hidden = false,
-            //     DefaultValue = "",
-            //     Type = "String"
-            // },
-            // [EnrollmentConfigConstants.OrganizationState] = new()
-            // {
-            //     Comments = "Full state name of the organization to be validated against",
-            //     Hidden = false,
-            //     DefaultValue = "",
-            //     Type = "String"
-            // },
-            // [EnrollmentConfigConstants.OrganizationCountry] = new()
-            // {
-            //     Comments = "2 character abbreviation of the country of the organization to be validated against",
-            //     Hidden = false,
-            //     DefaultValue = "",
-            //     Type = "String"
-            // },
-            // [EnrollmentConfigConstants.OrganizationPhone] = new()
-            // {
-            //     Comments = "Phone number of the organization to be validated against",
-            //     Hidden = false,
-            //     DefaultValue = "",
-            //     Type = "String"
-            // },
-            // [EnrollmentConfigConstants.RegistrationAgent] = new()
-            // {
-            //     Comments =
-            //         "Registration agent name assigned to the organization when its documents were filed for registration",
-            //     Hidden = false,
-            //     DefaultValue = "",
-            //     Type = "String"
-            // },
-            // [EnrollmentConfigConstants.RegistrationNumber] = new()
-            // {
-            //     Comments =
-            //         "Registration number assigned to the organization when its documents were filed for registration",
-            //     Hidden = false,
-            //     DefaultValue = "",
-            //     Type = "String"
-            // },
-            // [EnrollmentConfigConstants.RootCAType] = new()
-            // {
-            //     Comments =
-            //         "The certificate's root CA - Depending on certificate expiration date, SHA_1 not be allowed. Will default to SHA_2 if expiration date exceeds sha1 allowed date. Options are MarkMonitor_SHA_1, MarkMonitor_SHA_2, STARFIELD_SHA_1, or STARFIELD_SHA_2.",
-            //     Hidden = false,
-            //     DefaultValue = "MarkMonitor_SHA_2",
-            //     Type = "String"
-            // }
         };
     }
 
+    /// <summary>
+    /// Contains constant keys for plugin configuration properties.
+    /// </summary>
     public class ConfigConstants
     {
+        /// <summary>
+        /// The API key property name.
+        /// </summary>
         public const string ApiKey = "ApiKey";
+        /// <summary>
+        /// The API password property name.
+        /// </summary>
         public const string ApiPassword = "Password";
+        /// <summary>
+        /// The API username property name.
+        /// </summary>
         public const string ApiUsername = "Username";
+        /// <summary>
+        /// The base URL property name.
+        /// </summary>
         public const string BaseUrl = "BaseUrl";
+        /// <summary>
+        /// The organization name property name.
+        /// </summary>
         public const string OrgName = "OrgId";
+        /// <summary>
+        /// The enabled flag property name.
+        /// </summary>
         public const string Enabled = "Enabled";
     }
 
+    /// <summary>
+    /// Represents the configuration values for the MarkMonitor CA Plugin.
+    /// </summary>
     public class Config
     {
-        [JsonProperty(ConfigConstants.ApiKey)] public string ApiKey { get; set; }
+        /// <summary>
+        /// The API key used to authenticate with the MarkMonitor API.
+        /// </summary>
+        [JsonProperty(ConfigConstants.ApiKey)]
+        public string ApiKey { get; set; }
 
+        /// <summary>
+        /// The password for the MarkMonitor API service account.
+        /// </summary>
         [JsonProperty(ConfigConstants.ApiPassword)]
         public string ApiPassword { get; set; }
 
+        /// <summary>
+        /// The username for the MarkMonitor API service account.
+        /// </summary>
         [JsonProperty(ConfigConstants.ApiUsername)]
         public string ApiUsername { get; set; }
 
+        /// <summary>
+        /// The base URL for the MarkMonitor API.
+        /// </summary>
         [JsonProperty(ConfigConstants.BaseUrl)]
         public string BaseUrl { get; set; }
 
+        /// <summary>
+        /// The organization name or ID used in MarkMonitor operations.
+        /// </summary>
         [JsonProperty(ConfigConstants.OrgName)]
         public string OrgName { get; set; }
 
+        /// <summary>
+        /// Indicates whether the MarkMonitor CA Plugin is enabled.
+        /// </summary>
         [JsonProperty(ConfigConstants.Enabled)]
         public bool Enabled { get; set; }
     }
 
+    /// <summary>
+    /// Contains constant keys for enrollment configuration parameters.
+    /// </summary>
     public static class EnrollmentConfigConstants
     {
-        // public const string LastName = "LastName";
-        // public const string FirstName = "FirstName";
+        /// <summary>
+        /// The email address parameter name.
+        /// </summary>
         public const string Email = "Email";
-        // public const string Phone = "Phone";
-
+        /// <summary>
+        /// The organization name parameter name.
+        /// </summary>
         public const string OrganizationName = "OrganizationName";
-        // public const string OrganizationAddress = "OrganizationAddress";
-        // public const string OrganizationCity = "OrganizationCity";
-        // public const string OrganizationState = "OrganizationState";
-        // public const string OrganizationCountry = "OrganizationCountry";
-        // public const string OrganizationPhone = "OrganizationPhone";
-
-        // public const string JobTitle = "JobTitle";
-        // public const string RegistrationAgent = "RegistrationAgent";
-        // public const string RegistrationNumber = "RegistrationNumber";
-        //
-        // public const string RootCAType = "RootCAType";
-        // public const string SlotSize = "SlotSize";
+        /// <summary>
+        /// The certificate validity in years parameter name.
+        /// </summary>
         public const string CertificateValidityInYears = "CertificateValidityInYears";
+        /// <summary>
+        /// The additional emails parameter name.
+        /// </summary>
+        public const string AdditionalEmails = "AdditionalEmails";
+        /// <summary>
+        /// The MarkMonitor group parameter name.
+        /// </summary>
+        public const string MarkmonitorGroup = "MarkmonitorGroup";
+        /// <summary>
+        /// The MarkMonitor contact parameter name.
+        /// </summary>
+        public const string MarkmonitorContact = "MarkmonitorContact";
+        /// <summary>
+        /// The domain control validation method parameter name.
+        /// </summary>
+        public const string DCVMethod = "DCVMethod";
     }
 }

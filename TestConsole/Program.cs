@@ -1,5 +1,6 @@
 ﻿// See https://aka.ms/new-console-template for more information
 
+using Keyfactor.Extensions.CAPlugin.MarkMonitor;
 using Keyfactor.Extensions.CAPlugin.MarkMonitor.Client;
 using Keyfactor.Extensions.CAPlugin.MarkMonitor.Models;
 using Keyfactor.PKI.PEM;
@@ -55,79 +56,40 @@ internal abstract class Program
         rsaCsrs.AddRange(eccCsrs);
         // rsaCsrs.AddRange(dsaCsrs);
 
-        var orders = new List<OrderContent>();
-        foreach (var (csr, privateKey, keyPair) in rsaCsrs)
+        var orders = new List<string>();
+        foreach (var (csr, _, _) in rsaCsrs)
         {
             var csrPem = PemUtilities.DERToPEM(csr.GetEncoded(), PemUtilities.PemObjectType.CertRequest);
             var commonName = csr.GetCertificationRequestInfo().Subject.GetValueList()[0];
-            var privateKeyPem = PemUtilities.DERToPEM(privateKey, PemUtilities.PemObjectType.PrivateKey);
             var randomNumberOfEmails = new Random().Next(1, 4);
             var additionalEmails = await EmailAddressGenerator.GenerateRandomEmailsAsync(randomNumberOfEmails);
-            var orgId = orgs[0].Id;
-            var orgGuid = Guid.Parse(orgId);
-            var orgContact = orgs[0].Contacts[0];
-            var contactId = orgContact.Id;
-            var signatureAlgorithm = csr.SignatureAlgorithm.Algorithm.Id;
 
-            var requestAlgorithm = signatureAlgorithm switch
-            {
-                //check if algorithm is RSA or ECC
-                "1.2.840.113549.1.1.11" => AlgorithmTypes.Rsa.GetDescription(),
-                "1.2.840.10045.4.3.1" or "1.2.840.10045.4.3.2" or "1.2.840.10045.4.3.3" or "1.2.840.10045.4.3.4"
-                    or "1.2.840.10045.2.1" => AlgorithmTypes.Ecc.GetDescription(),
-                // "2.16.840.1.101.3.4.3.1" or "2.16.840.1.101.3.4.3.2" or "2.16.840.1.101.3.4.3.3"
-                //     or "2.16.840.1.101.3.4.3.4" => AlgorithmTypes.Dsa.GetDescription(), //DSA not supported
-                _ => throw new Exception($"Invalid signature algorithm {signatureAlgorithm}")
-            };
-
-            var orderContacts = new List<MarkMonitorCreateOrderContact>
-            {
-                new()
-                {
-                    Id = contactId,
-                    ContactTypes = orgContact.ContactTypes
-                }
-            };
-
-            var dcvEmails = new List<DcvEmail>
-            {
-                new()
-                {
-                    Email = "justin.mack@markmonitor.com",
-                    DnsName = "mmcertdomain.com",
-                    EmailDomain = "markmonitor.com"
-                }
-            };
-            var certOrder = new MarkMonitorCreateOrderRequest
-            {
-                AdditionalEmails = additionalEmails,
-                SkipPrice = true,
-                OrganizationId = orgGuid,
-                // GroupId = null,
-                // Contacts = orderContacts,
-                Comments = "Requested via Keyfactor Command",
-                CertType = CertOrderTypes.SslDvGeotrust.GetDescription(),
-                Locale = "en",
-                Provider = "DIGICERT",
-                Cert = new MarkMonitorOrderRequestCert
-                {
-                    CommonName = commonName,
-                    Csr = csrPem,
-                    // ServerPlatform = CertServerPlatforms.Default.GetDescription(),
-                    DcvMethod = "EMAIL",
-                    DcvEmails = new List<DcvEmail>(),
-                    // Provider = "DIGICERT",
-                    AlgorithmHash = requestAlgorithm
-                }
-            };
-            Console.WriteLine("Creating certificate order...");
+            Console.WriteLine("Creating certificate order via EnrollCertificateAsync...");
 
             var client = new MarkMonitorClient(baseUrl, apiToken, username, password);
             await client.AuthenticateAsync();
             Console.WriteLine("Authenticated.");
-            var order = await client.CreateCertificateOrder(certOrder);
-            Console.WriteLine($"Created certificate order: {order.Id}");
-            orders.Add(order);
+
+            var config = new MarkMonitorConfig
+            {
+                ApiKey = apiToken,
+                ApiUsername = username,
+                ApiPassword = password,
+                BaseUrl = baseUrl,
+                OrgName = orgs[0].Name,
+                Enabled = true
+            };
+            var productParams = new Dictionary<string, string>
+            {
+                ["additionalEmails"] = string.Join(",", additionalEmails)
+            };
+
+            var enrollResult = await client.EnrollCertificateAsync(csrPem, $"CN={commonName}",
+                new Dictionary<string, string[]>(), CertOrderTypes.SslDvGeotrust.ToString(), productParams, config);
+
+            if (enrollResult == null) throw new Exception("EnrollCertificateAsync returned null");
+            Console.WriteLine($"Created certificate order: {enrollResult.CARequestID} (status: {enrollResult.Status})");
+            orders.Add(enrollResult.CARequestID);
         }
 
         Console.WriteLine("Tests completed successfully with orders: " + orders.Count);
@@ -361,7 +323,7 @@ internal abstract class Program
         foreach (var org in orgs)
         {
             Console.WriteLine($"Org: {org.Id} - {org.Provider} - {org.ProviderId}");
-            foreach (var validation in org.Validations)
+            foreach (var validation in org.Validations ?? new List<MarkMonitorOrgValidation>())
                 Console.WriteLine($"Validation: {validation.Name} - {validation.Type}");
         }
 

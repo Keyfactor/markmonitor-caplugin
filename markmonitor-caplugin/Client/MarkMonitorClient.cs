@@ -248,9 +248,9 @@ public class MarkMonitorClient : IDisposable
         var query = new List<string>();
         if (page > 0) query.Add($"page={page}");
         if (limit > 0) query.Add($"size={limit}");
-        if (!string.IsNullOrEmpty(sort)) query.Add($"sort={sort}");
+        if (!string.IsNullOrEmpty(sort)) query.Add($"sort={Uri.EscapeDataString(sort)}");
         if (providerId > 0) query.Add($"providerId={providerId}");
-        if (!string.IsNullOrEmpty(orgId)) query.Add($"organizationId={orgId}");
+        if (!string.IsNullOrEmpty(orgId)) query.Add($"organizationId={Uri.EscapeDataString(orgId)}");
         _logger.MethodExit();
         return query;
     }
@@ -261,8 +261,8 @@ public class MarkMonitorClient : IDisposable
         var query = new List<string>();
         if (page > 0) query.Add($"page={page}");
         if (limit > 0) query.Add($"size={limit}");
-        if (!string.IsNullOrEmpty(sort)) query.Add($"sort={sort}");
-        if (!string.IsNullOrEmpty(name)) query.Add($"name={name}");
+        if (!string.IsNullOrEmpty(sort)) query.Add($"sort={Uri.EscapeDataString(sort)}");
+        if (!string.IsNullOrEmpty(name)) query.Add($"name={Uri.EscapeDataString(name)}");
 
         _logger.LogTrace("Query string: {Query}", query);
         _logger.MethodExit();

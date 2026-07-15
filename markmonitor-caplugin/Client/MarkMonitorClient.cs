@@ -25,6 +25,7 @@ public class MarkMonitorClient : IDisposable
     private string _password;
     private string _username;
     private readonly TimeProvider _timeProvider;
+    private readonly SemaphoreSlim _authLock = new(1, 1);
 
     // Guards against creating a duplicate MarkMonitor order when Command retries an Enroll call -
     // whether the first attempt is still in flight (the retry races it) or already finished but its
@@ -71,6 +72,7 @@ public class MarkMonitorClient : IDisposable
     public void Dispose()
     {
         _httpClient.Dispose();
+        _authLock.Dispose();
     }
 
     public string BaseUrl { get; }
@@ -1052,13 +1054,30 @@ public class MarkMonitorClient : IDisposable
         }
     }
 
+    private bool TokenNeedsRefresh() =>
+        string.IsNullOrEmpty(_bearerToken) || _tokenExpiresAtUtc == null ||
+        _timeProvider.GetUtcNow().UtcDateTime >= _tokenExpiresAtUtc;
+
     private async Task EnsureAuthenticatedAsync()
     {
-        if (string.IsNullOrEmpty(_bearerToken) || _tokenExpiresAtUtc == null ||
-            _timeProvider.GetUtcNow().UtcDateTime >= _tokenExpiresAtUtc)
+        // Double-checked locking: without the lock, two callers can both see an expired token,
+        // both call AuthenticateAsync concurrently, and race writing _bearerToken/_tokenExpiresAtUtc
+        // and the shared HttpClient's Authorization header - one of them can end up sending requests
+        // under the other's (or a half-written) token.
+        if (!TokenNeedsRefresh()) return;
+
+        await _authLock.WaitAsync();
+        try
         {
-            _logger.LogDebug("No valid bearer token on hand - authenticating");
-            await AuthenticateAsync();
+            if (TokenNeedsRefresh())
+            {
+                _logger.LogDebug("No valid bearer token on hand - authenticating");
+                await AuthenticateAsync();
+            }
+        }
+        finally
+        {
+            _authLock.Release();
         }
     }
 

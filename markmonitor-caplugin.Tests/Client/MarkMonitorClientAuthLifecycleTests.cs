@@ -71,4 +71,30 @@ public class MarkMonitorClientAuthLifecycleTests
 
         Assert.Equal(1, AuthCallCount(handler));
     }
+
+    [Fact]
+    public async Task EnsureAuthenticatedAsync_CalledConcurrentlyWithAnExpiredToken_OnlyAuthenticatesOnce()
+    {
+        // Without a lock, two callers can both see the expired token, both call AuthenticateAsync
+        // concurrently, and race writing _bearerToken/_tokenExpiresAtUtc and the shared HttpClient's
+        // Authorization header. Gate the auth response so both calls are genuinely in flight together
+        // rather than sequential.
+        var clock = new ManualTimeProvider { UtcNow = DateTimeOffset.UtcNow };
+        var authGate = new TaskCompletionSource();
+        var handler = new FakeHttpMessageHandler()
+            .WhenGated(req => FakeHttpMessageHandler.Is(req, "POST", "/auth/v1/auth/authenticate"), authGate.Task,
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK, """{"token":"fake-token","expiresIn":3600}"""))
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())));
+        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler,
+            clock);
+
+        var firstCall = client.ListOrganizationsAsync();
+        var secondCall = client.ListOrganizationsAsync();
+        authGate.SetResult();
+        await Task.WhenAll(firstCall, secondCall);
+
+        Assert.Equal(1, AuthCallCount(handler));
+    }
 }

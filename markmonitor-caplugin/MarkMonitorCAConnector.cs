@@ -279,7 +279,8 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             ? (string)aUrl
             : string.Empty;
         if (string.IsNullOrWhiteSpace(baseURL)) baseURL = "https://api.markmonitor.com";
-        else if (!baseURL.Contains("http")) errors.Add("The Base URL needs http:// or https://");
+        else if (!baseURL.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            errors.Add("The Base URL must start with https:// - credentials and the bearer token are sent to it");
         else _logger.LogDebug($"{MarkMonitorConstants.ConfigConstants.BaseUrl} is set");
         _logger.LogTrace("MarkMonitor API Base URL: {BaseURL}", baseURL);
 

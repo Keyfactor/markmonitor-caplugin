@@ -37,4 +37,23 @@ public class MarkMonitorClientAuthenticateTests
         Assert.IsNotType<HttpRequestException>(ex);
         Assert.Contains("Invalid username or password", ex.Message);
     }
+
+    [Fact]
+    public async Task AuthenticateAsync_CalledTwice_DoesNotDuplicateTheApiKeyHeader()
+    {
+        // DefaultRequestHeaders.Add() does not replace an existing value for the same header name -
+        // calling AuthenticateAsync a second time on the same client (now a real path, since
+        // EnsureAuthenticatedAsync re-authenticates on token expiry) used to leave two X-API-KEY
+        // values on every subsequent request.
+        var handler = new FakeHttpMessageHandler().WithSuccessfulAuth();
+        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+
+        await client.AuthenticateAsync();
+        await client.AuthenticateAsync();
+
+        var lastRequest = handler.Requests.Last();
+        var apiKeyValues = lastRequest.Headers.GetValues("X-API-KEY").ToList();
+        Assert.Single(apiKeyValues);
+        Assert.Equal("key", apiKeyValues[0]);
+    }
 }

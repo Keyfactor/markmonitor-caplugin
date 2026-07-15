@@ -22,11 +22,11 @@ jobs:
             10.0.x
 
       # markmonitor-caplugin.Tests references markmonitor-caplugin, which restores several
-      # Keyfactor.* packages from Keyfactor's private feed - not just nuget.org.
-      - name: Add Keyfactor NuGet source
+      # Keyfactor.* packages from Keyfactor's GitHub Packages feed - not just nuget.org.
+      - name: Add Keyfactor GitHub Packages NuGet source
         run: |
-          dotnet nuget add source "https://pkgs.dev.azure.com/Keyfactor/_packaging/KeyfactorPackages/nuget/v3/index.json" \
-            --name keyfactor \
+          dotnet nuget add source "https://nuget.pkg.github.com/Keyfactor/index.json" \
+            --name keyfactor-github \
             --username keyfactor \
             --password "${{ secrets.V2BUILDTOKEN }}" \
             --store-password-in-clear-text

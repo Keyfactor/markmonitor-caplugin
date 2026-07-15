@@ -8,15 +8,14 @@ public class MarkMonitorClientOrderIdValidationTests
     private const string NotAGuid = "../../etc/passwd";
 
     [Fact]
-    public async Task GetSingleOrderAsync_WithNonGuidOrderId_ReturnsNullWithoutMakingARequest()
+    public async Task GetSingleOrderAsync_WithNonGuidOrderId_ThrowsWithoutMakingARequest()
     {
         var handler = new FakeHttpMessageHandler().WithSuccessfulAuth();
         var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
         await client.AuthenticateAsync();
 
-        var result = await client.GetSingleOrderAsync(NotAGuid);
+        await Assert.ThrowsAsync<ArgumentException>(() => client.GetSingleOrderAsync(NotAGuid));
 
-        Assert.Null(result);
         Assert.DoesNotContain(handler.Requests, r => FakeHttpMessageHandler.Is(r, "GET", "/order/"));
     }
 

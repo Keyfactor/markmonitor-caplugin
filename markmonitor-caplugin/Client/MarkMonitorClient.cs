@@ -485,13 +485,15 @@ public class MarkMonitorClient : IDisposable
             else
                 throw new Exception(BuildErrorString(content));
 
+            // order.Cert can be null for an order that hasn't progressed far enough yet (e.g.
+            // CREATED/DIGI_NEEDS_CSR) - same class of gap already fixed in GetCertificateInventoryAsync.
             DateTime? revocationDate = null;
-            if (order.Cert.RevokeStatus == "REVOKED") revocationDate = Convert.ToDateTime(order.Cert.DateValidUntil);
+            if (order.Cert?.RevokeStatus == "REVOKED") revocationDate = Convert.ToDateTime(order.Cert.DateValidUntil);
 
             return new AnyCAPluginCertificate
             {
                 CARequestID = order.Id,
-                Certificate = order.Cert.EndEntityCert,
+                Certificate = order.Cert?.EndEntityCert,
                 Status = MarkMonitorCertificateStatusToCAStatus(order),
                 ProductID = order.CertType,
                 RevocationDate = revocationDate
@@ -499,8 +501,11 @@ public class MarkMonitorClient : IDisposable
         }
         catch (Exception e)
         {
+            // Rethrow rather than swallow to null - GetSingleRecord (the connector method that
+            // calls this) needs the real exception to log a failure instead of silently reporting
+            // "not found" for what was actually an auth/network/parsing error.
             _logger.LogError("An error has occurred: {EMessage}", e.Message);
-            return null;
+            throw;
         }
     }
 

@@ -1016,9 +1016,13 @@ public class MarkMonitorClient : IDisposable
         else if (json["detail"] != null)
             errorMessages.Add(json["detail"].ToString());
 
-        return errorMessages.Any()
-            ? string.Join(Environment.NewLine, errorMessages)
-            : $"No recognized error format found in response: {jsonString}";
+        if (errorMessages.Any()) return string.Join(Environment.NewLine, errorMessages);
+
+        // Unrecognized shape - order/contact payloads can carry customer PII (name, email), so
+        // truncate rather than dumping the full response body verbatim into an error-level log.
+        const int maxLength = 200;
+        var truncated = jsonString.Length > maxLength ? jsonString[..maxLength] + "... (truncated)" : jsonString;
+        return $"No recognized error format found in response: {truncated}";
     }
 
     private byte[] GetCsrBytes(string csr)

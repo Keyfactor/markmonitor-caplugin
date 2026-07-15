@@ -691,6 +691,11 @@ public class MarkMonitorClient : IDisposable
                     CommonName = cleanSubject(subject),
                     Csr = csrPem.Replace("\r", ""),
                     DcvMethod = dcvMethod,
+                    // dcvEmails is not marked required by MarkMonitor's schema, and leaving it empty
+                    // has been verified against the live API to succeed for DCVMethod=EMAIL -
+                    // MarkMonitor falls back to the domain/org's registered DCV contacts. Revisit if
+                    // that ever changes; there's no documented case where an explicit approver email
+                    // is actually required here.
                     DcvEmails = new List<DcvEmail>(),
                     AlgorithmHash = requestAlgorithm
                 }

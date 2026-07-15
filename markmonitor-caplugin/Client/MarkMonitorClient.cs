@@ -590,11 +590,14 @@ public class MarkMonitorClient : IDisposable
 
             var orgIdGuid = Guid.Parse(orgId);
 
-            var comments = caseInsensitiveParams.GetValueOrDefault("comments", "Requested via Keyfactor Command");
+            var comments = caseInsensitiveParams.GetValueOrDefault(
+                MarkMonitorCAPluginConfig.EnrollmentConfigConstants.Comments, "Requested via Keyfactor Command");
             _logger.LogTrace("Comments: {Comments}", comments);
-            var locale = caseInsensitiveParams.GetValueOrDefault("locale", "en");
+            var locale = caseInsensitiveParams.GetValueOrDefault(
+                MarkMonitorCAPluginConfig.EnrollmentConfigConstants.Locale, "en");
             _logger.LogTrace("Locale: {Locale}", locale);
-            var provider = caseInsensitiveParams.GetValueOrDefault("provider", "DIGICERT");
+            var provider = caseInsensitiveParams.GetValueOrDefault(
+                MarkMonitorCAPluginConfig.EnrollmentConfigConstants.Provider, "DIGICERT");
             _logger.LogTrace("Provider: {Provider}", provider);
 
             _logger.LogDebug("Resolving MarkMonitor contact for order");

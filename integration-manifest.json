@@ -40,18 +40,6 @@
             ],
             "enrollment_config": [
                 {
-                    "name": "CertificateValidityInYears",
-                    "description": "Number of years the certificate will be valid for"
-                },
-                {
-                    "name": "Email",
-                    "description": "Email address of the requestor"
-                },
-                {
-                    "name": "OrganizationName",
-                    "description": "Name of the organization to be validated against"
-                },
-                {
                     "name": "AdditionalEmails",
                     "description": "List of 0 or more comma separated email addresses to send the certificate to via email after generation."
                 },
@@ -66,6 +54,18 @@
                 {
                     "name": "DCVMethod",
                     "description": "The method to use for Domain Control Validation (DCV). Valid values are EMAIL, DNS_CNAME_TOKEN, HTTP_TOKEN, DNS_TXT_TOKEN. Default is EMAIL."
+                },
+                {
+                    "name": "comments",
+                    "description": "Comments to attach to the MarkMonitor order. Default is \"Requested via Keyfactor Command\"."
+                },
+                {
+                    "name": "locale",
+                    "description": "Locale to use for the MarkMonitor order. Default is \"en\"."
+                },
+                {
+                    "name": "provider",
+                    "description": "The certificate provider to use for the order. Default is \"DIGICERT\" (currently the only provider MarkMonitor's API supports)."
                 }
             ],
             "product_ids": [

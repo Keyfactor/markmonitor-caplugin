@@ -86,27 +86,6 @@ public class MarkMonitorCAPluginConfig
     {
         return new Dictionary<string, PropertyConfigInfo>
         {
-            [EnrollmentConfigConstants.CertificateValidityInYears] = new()
-            {
-                Comments = "Number of years the certificate will be valid for",
-                Hidden = false,
-                DefaultValue = "1",
-                Type = "Number"
-            },
-            [EnrollmentConfigConstants.Email] = new()
-            {
-                Comments = "Email address of the requestor",
-                Hidden = false,
-                DefaultValue = "",
-                Type = "String"
-            },
-            [EnrollmentConfigConstants.OrganizationName] = new()
-            {
-                Comments = "Name of the organization to be validated against",
-                Hidden = false,
-                DefaultValue = "",
-                Type = "String"
-            },
             [EnrollmentConfigConstants.AdditionalEmails] = new()
             {
                 Comments =
@@ -136,6 +115,27 @@ public class MarkMonitorCAPluginConfig
                     "The method to use for Domain Control Validation (DCV). Valid values are EMAIL, DNS_CNAME_TOKEN, HTTP_TOKEN, DNS_TXT_TOKEN. Default is EMAIL.",
                 Hidden = false,
                 DefaultValue = "EMAIL",
+                Type = "String"
+            },
+            [EnrollmentConfigConstants.Comments] = new()
+            {
+                Comments = "Comments to attach to the MarkMonitor order. Default is \"Requested via Keyfactor Command\".",
+                Hidden = false,
+                DefaultValue = "Requested via Keyfactor Command",
+                Type = "String"
+            },
+            [EnrollmentConfigConstants.Locale] = new()
+            {
+                Comments = "Locale to use for the MarkMonitor order. Default is \"en\".",
+                Hidden = false,
+                DefaultValue = "en",
+                Type = "String"
+            },
+            [EnrollmentConfigConstants.Provider] = new()
+            {
+                Comments = "The certificate provider to use for the order. Default is \"DIGICERT\" (currently the only provider MarkMonitor's API supports).",
+                Hidden = false,
+                DefaultValue = "DIGICERT",
                 Type = "String"
             }
         };
@@ -220,18 +220,6 @@ public class MarkMonitorCAPluginConfig
     public static class EnrollmentConfigConstants
     {
         /// <summary>
-        /// The email address parameter name.
-        /// </summary>
-        public const string Email = "Email";
-        /// <summary>
-        /// The organization name parameter name.
-        /// </summary>
-        public const string OrganizationName = "OrganizationName";
-        /// <summary>
-        /// The certificate validity in years parameter name.
-        /// </summary>
-        public const string CertificateValidityInYears = "CertificateValidityInYears";
-        /// <summary>
         /// The additional emails parameter name.
         /// </summary>
         public const string AdditionalEmails = "AdditionalEmails";
@@ -247,5 +235,17 @@ public class MarkMonitorCAPluginConfig
         /// The domain control validation method parameter name.
         /// </summary>
         public const string DCVMethod = "DCVMethod";
+        /// <summary>
+        /// The order comments parameter name.
+        /// </summary>
+        public const string Comments = "comments";
+        /// <summary>
+        /// The order locale parameter name.
+        /// </summary>
+        public const string Locale = "locale";
+        /// <summary>
+        /// The certificate provider parameter name.
+        /// </summary>
+        public const string Provider = "provider";
     }
 }

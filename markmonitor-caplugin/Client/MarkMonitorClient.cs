@@ -822,7 +822,7 @@ public class MarkMonitorClient : IDisposable
 
             var url = $"{BaseUrl}/certs/v1/order/{orderId}/cancel";
             _logger.LogDebug("Revoking certificate at {Url}", url);
-            var payload = new StringContent("", Encoding.UTF8, "application/json");
+            var payload = new StringContent("{}", Encoding.UTF8, "application/json");
             var response = await _httpClient.PatchAsync(url, payload);
 
             _logger.LogDebug("Reading response content");
@@ -907,7 +907,7 @@ public class MarkMonitorClient : IDisposable
 
             var url = $"{BaseUrl}/certs/v1/order/{orderId}/revoke";
             _logger.LogDebug("Revoking certificate at {Url}", url);
-            var payload = new StringContent("", Encoding.UTF8, "application/json");
+            var payload = new StringContent("{}", Encoding.UTF8, "application/json");
             var response = await _httpClient.PatchAsync(url, payload);
 
             _logger.LogDebug("Reading response content");

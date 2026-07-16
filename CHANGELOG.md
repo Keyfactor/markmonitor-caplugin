@@ -48,6 +48,9 @@ All notable changes to this project will be documented in this file.
   race writes to the shared bearer token and `HttpClient` headers.
 - `GetOrganizationAsync` now rejects a non-GUID org ID before making a request, matching the
   validation already applied to order IDs.
+- `Enroll` now rejects an ECC CSR that uses explicit curve parameters instead of a named curve (e.g.
+  P-256), with an actionable error message. MarkMonitor silently fails such an order almost instantly,
+  with no reason surfaced anywhere in its API.
 
 ### Security
 

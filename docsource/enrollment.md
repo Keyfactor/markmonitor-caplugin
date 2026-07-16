@@ -30,6 +30,17 @@ Example PFX Enrollment
 ![enroll_csr.png](images/enroll_csr.png)
 
 > [!IMPORTANT]
+> An ECC CSR must use a named curve (e.g. P-256/secp256r1), not explicit curve parameters. MarkMonitor
+> rejects a CSR using explicit parameters silently - the order reaches a failed status almost
+> immediately, with no reason surfaced anywhere in its API, history, or order details. The plugin
+> validates this at enrollment time and rejects such a CSR with an explicit error rather than
+> submitting an order that will fail invisibly. If you see this behavior when generating your own
+> CSR (rather than through the plugin), check that your CSR-generation tooling encodes the curve by
+> OID reference rather than spelling out its parameters (`openssl req -in your.csr -noout -text` will
+> show `ASN1 OID: prime256v1` for a compliant CSR, versus explicit `Prime:`/`A:`/`B:`/`Generator:`
+> fields for one that will fail).
+
+> [!IMPORTANT]
 > Enrollments will FAIL due to the fact that email verification is required to complete the cert order flow. Once approved,
 > the certificate will be available in Keyfactor Command on the next incremental CA sync.
 

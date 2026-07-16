@@ -554,6 +554,16 @@ public class MarkMonitorClient : IDisposable
         return requestAlgorithm;
     }
 
+    // A reservation is "still active" - and must keep being awaited rather than replaced - if either
+    // its nominal window hasn't elapsed yet, or its own call simply hasn't finished yet. The latter
+    // matters when a call's real work (org/group lookups, CSR parsing, the order-create HTTP call
+    // itself) takes longer than RecentEnrollmentWindow: without it, a retry arriving after the nominal
+    // window - but while the original call is still genuinely in flight - would win a fresh
+    // reservation and create a real second order, exactly the outcome this cache exists to prevent.
+    private static bool IsReservationStillActive(
+        (DateTime ExpiresAtUtc, TaskCompletionSource<EnrollmentResult> Tcs) entry, DateTime now) =>
+        entry.ExpiresAtUtc > now || !entry.Tcs.Task.IsCompleted;
+
     public async Task<EnrollmentResult> EnrollCertificateAsync(string csr, string subject,
         Dictionary<string, string[]> san, string orderType, Dictionary<string, string> productParams,
         MarkMonitorConfig config)
@@ -561,12 +571,13 @@ public class MarkMonitorClient : IDisposable
         _logger.MethodEntry();
         var dedupeKey = $"{config.OrgName}|{orderType}|{subject}|{csr}";
         TaskCompletionSource<EnrollmentResult> ownedReservation = null;
+        (DateTime ExpiresAtUtc, TaskCompletionSource<EnrollmentResult> Tcs) ownedEntry = default;
         try
         {
             await EnsureAuthenticatedAsync();
 
             var now = _timeProvider.GetUtcNow().UtcDateTime;
-            if (_recentEnrollments.TryGetValue(dedupeKey, out var existing) && existing.ExpiresAtUtc > now)
+            if (_recentEnrollments.TryGetValue(dedupeKey, out var existing) && IsReservationStillActive(existing, now))
             {
                 _logger.LogWarning(
                     "An identical enrollment for subject {Subject} was already submitted in the last {Minutes} minute(s) - awaiting that result instead of creating a duplicate order",
@@ -579,13 +590,17 @@ public class MarkMonitorClient : IDisposable
             // the reservation and awaits it, rather than racing to create a second order.
             var candidateTcs =
                 new TaskCompletionSource<EnrollmentResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-            // AddOrUpdate, not GetOrAdd: an expired entry must be replaced, not returned as-is -
-            // GetOrAdd would hand back the stale (already-completed) reservation forever once one
-            // exists for this key.
+            // AddOrUpdate, not GetOrAdd: an expired-and-completed entry must be replaced, not returned
+            // as-is - GetOrAdd would hand back the stale (already-completed) reservation forever once
+            // one exists for this key. A reservation is only replaced once BOTH its nominal window has
+            // elapsed AND its own call has actually finished - a still-running call that happens to run
+            // longer than the window must keep being awaited, not raced by a second real order.
             var reserved = _recentEnrollments.AddOrUpdate(
                 dedupeKey,
                 (now + RecentEnrollmentWindow, candidateTcs),
-                (_, current) => current.ExpiresAtUtc > now ? current : (now + RecentEnrollmentWindow, candidateTcs));
+                (_, current) => IsReservationStillActive(current, now)
+                    ? current
+                    : (now + RecentEnrollmentWindow, candidateTcs));
             if (reserved.Tcs != candidateTcs)
             {
                 _logger.LogWarning(
@@ -595,6 +610,7 @@ public class MarkMonitorClient : IDisposable
             }
 
             ownedReservation = candidateTcs;
+            ownedEntry = reserved;
 
             var caseInsensitiveParams = new Dictionary<string, string>(productParams, StringComparer.OrdinalIgnoreCase);
 
@@ -717,9 +733,14 @@ public class MarkMonitorClient : IDisposable
             if (ownedReservation != null)
             {
                 // Don't cache a failed attempt - a retry after a real failure should get a fresh
-                // attempt, not be stuck replaying this exception until the window expires.
+                // attempt, not be stuck replaying this exception until the window expires. Conditional
+                // TryRemove, not a bare key-based one: if this reservation's own window already expired
+                // while this call was still running, a different caller may have since won a fresh
+                // reservation for the same key - an unconditional remove would delete THEIR entry
+                // instead of (the no-longer-present) one this call owned.
                 ownedReservation.SetException(e);
-                _recentEnrollments.TryRemove(dedupeKey, out _);
+                ((ICollection<KeyValuePair<string, (DateTime, TaskCompletionSource<EnrollmentResult>)>>)_recentEnrollments)
+                    .Remove(new KeyValuePair<string, (DateTime, TaskCompletionSource<EnrollmentResult>)>(dedupeKey, ownedEntry));
             }
 
             throw;

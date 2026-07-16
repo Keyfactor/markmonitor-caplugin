@@ -109,6 +109,44 @@ public class MarkMonitorClientEnrollIdempotencyTests
     }
 
     [Fact]
+    public async Task EnrollCertificateAsync_RetriedAfterTheWindowNominallyExpiresButWhileStillGenuinelyInFlight_OnlyCreatesOneOrder()
+    {
+        // A reservation's nominal window (RecentEnrollmentWindow) is stamped when the call starts, not
+        // extended while it runs. If the real work takes longer than that window, a retry arriving
+        // after the nominal expiry - but while the original call is still genuinely in flight - must
+        // still be deduped, not race the still-running original into creating a second real order.
+        var clock = new ManualTimeProvider { UtcNow = DateTimeOffset.UtcNow };
+        var orderResponseGate = new TaskCompletionSource();
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())))
+            .WhenGated(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"), orderResponseGate.Task,
+                FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
+                    SampleOrders.OrderWithCert("11111111-1111-1111-1111-111111111111", "CREATED")));
+        var client = handler.BuildClient(clock);
+        await client.AuthenticateAsync();
+
+        var firstCall = client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
+
+        await WaitUntil(() => OrderCreationCount(handler) == 1);
+
+        // Move well past the 5-minute nominal window while the first call is still gated/in-flight.
+        clock.UtcNow = clock.UtcNow.AddMinutes(6);
+
+        var secondCall = client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
+
+        orderResponseGate.SetResult();
+        var results = await Task.WhenAll(firstCall, secondCall);
+
+        Assert.Equal(1, OrderCreationCount(handler));
+        Assert.Equal(results[0].CARequestID, results[1].CARequestID);
+    }
+
+    [Fact]
     public async Task EnrollCertificateAsync_WhenTheFirstAttemptFails_ARetryGetsAFreshAttemptRatherThanTheCachedFailure()
     {
         var handler = new FakeHttpMessageHandler()

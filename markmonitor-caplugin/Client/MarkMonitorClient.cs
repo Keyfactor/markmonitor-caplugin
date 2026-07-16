@@ -1018,17 +1018,34 @@ public class MarkMonitorClient : IDisposable
             // for RenewOrReissue, where the order ID being revoked comes from Command's
             // ICertificateDataReader rather than from this org's own enrollment - so verify it here
             // rather than trusting the caller (or MarkMonitor) to have scoped it correctly.
-            if (!string.IsNullOrWhiteSpace(orgName))
+            //
+            // A blank orgName intentionally skips this check (ad-hoc/manual callers that don't scope
+            // by organization), but that must never happen silently - it's logged explicitly so a
+            // production caller unexpectedly hitting this path (e.g. a misconfigured OrgId) is
+            // visible in the logs rather than looking identical to a passing check.
+            if (string.IsNullOrWhiteSpace(orgName))
+            {
+                _logger.LogWarning(
+                    "Revoking order {OrderId} with no organization to verify ownership against - the cross-organization ownership check was skipped",
+                    orderId);
+            }
+            else
             {
                 var expectedOrgId = await ResolveOrganizationIdAsync(orgName);
                 var order = await FetchOrderAsync(orderId);
-                if (expectedOrgId == null ||
-                    !string.Equals(order.OrganizationId, expectedOrgId, StringComparison.OrdinalIgnoreCase))
+                // Comparing as parsed Guids, not raw strings: Guid.TryParse accepts several textual
+                // formats (braces, no dashes, etc.), so an admin-configured OrgId in a non-canonical
+                // format must still match MarkMonitor's own canonical serialization of the same GUID.
+                var actualOrgIdParsed = Guid.TryParse(order.OrganizationId, out var actualOrgId) ? actualOrgId : (Guid?)null;
+                var expectedOrgIdParsed = expectedOrgId != null && Guid.TryParse(expectedOrgId, out var parsedExpected)
+                    ? parsedExpected
+                    : (Guid?)null;
+                if (expectedOrgIdParsed == null || actualOrgIdParsed == null || actualOrgIdParsed != expectedOrgIdParsed)
                 {
-                    var orgMismatchMsg =
-                        $"Order {orderId} belongs to a different organization than the configured '{orgName}' - refusing to revoke it";
-                    _logger.LogError("{ErrMsg}", orgMismatchMsg);
-                    throw new Exception(orgMismatchMsg);
+                    _logger.LogError(
+                        "Refusing to revoke order {OrderId}: it belongs to organization {ActualOrgId}, but the configured organization {ConfiguredOrgName} resolved to {ExpectedOrgId}",
+                        orderId, order.OrganizationId, orgName, expectedOrgId);
+                    throw new Exception($"Order {orderId} belongs to a different organization than the configured '{orgName}' - refusing to revoke it");
                 }
             }
 

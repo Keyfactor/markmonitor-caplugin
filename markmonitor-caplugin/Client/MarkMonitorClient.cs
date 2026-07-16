@@ -9,39 +9,70 @@ using Keyfactor.PKI.PEM;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Pkcs;
 using Org.BouncyCastle.Tls;
 
 namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Client;
 
-public class MarkMonitorClient
+public class MarkMonitorClient : IDisposable
 {
     private readonly HttpClient _httpClient;
     private readonly ILogger _logger;
     private string _apiKey;
     private string _bearerToken;
+    private DateTime? _tokenExpiresAtUtc;
     private string _password;
     private string _username;
+    private readonly TimeProvider _timeProvider;
+    private readonly SemaphoreSlim _authLock = new(1, 1);
 
-    public MarkMonitorClient(string baseUrl, string apiKey, string username, string password, bool validateSsl = true)
+    // Guards against creating a duplicate MarkMonitor order when Command retries an Enroll call -
+    // whether the first attempt is still in flight (the retry races it) or already finished but its
+    // response was lost (timeout, dropped connection, etc). Keyed on org+product+subject+CSR - an
+    // identical CSR for the same subject/org/product within the window is treated as a retry, not a
+    // distinct request. The value is reserved (via a TaskCompletionSource) *before* the real
+    // CreateCertificateOrder call starts, so a retry that arrives while the first call is still
+    // in-flight awaits the same in-progress result instead of starting a second order. Process-local
+    // and short-lived by design: it's a guard against the specific narrow retry window, not a durable
+    // dedup store (that would need to live in MarkMonitor itself).
+    private static readonly TimeSpan RecentEnrollmentWindow = TimeSpan.FromMinutes(5);
+
+    private readonly ConcurrentDictionary<string, (DateTime ExpiresAtUtc, TaskCompletionSource<EnrollmentResult> Tcs)>
+        _recentEnrollments = new();
+
+    public MarkMonitorClient(string baseUrl, string apiKey, string username, string password, bool validateSsl = true,
+        HttpMessageHandler handler = null, TimeProvider timeProvider = null)
     {
         BaseUrl = baseUrl;
         _logger = LogHandler.GetClassLogger(GetType());
         _apiKey = apiKey;
         _username = username;
         _password = password;
+        _timeProvider = timeProvider ?? TimeProvider.System;
 
-        var handler = new HttpClientHandler { UseCookies = false };
-
-        if (!validateSsl)
+        // A caller-supplied handler (e.g. a fake in tests) is used as-is; otherwise build the real
+        // HttpClientHandler with the usual SSL validation behavior.
+        if (handler == null)
         {
-            _logger.LogWarning("SSL certificate validation is disabled for {BaseUrl}", baseUrl);
-            handler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true;
+            var httpClientHandler = new HttpClientHandler { UseCookies = false };
+
+            if (!validateSsl)
+            {
+                _logger.LogWarning("SSL certificate validation is disabled for {BaseUrl}", baseUrl);
+                httpClientHandler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true;
+            }
+
+            handler = httpClientHandler;
         }
 
-
         _httpClient = new HttpClient(handler);
-        // _ = AuthenticateAsync();
+    }
+
+    public void Dispose()
+    {
+        _httpClient.Dispose();
+        _authLock.Dispose();
     }
 
     public string BaseUrl { get; }
@@ -86,6 +117,7 @@ public class MarkMonitorClient
         if (!isValid) throw new ConfigurationValidationException("Invalid configuration");
 
         _logger.LogDebug("Setting \"X-API-KEY\" header");
+        _httpClient.DefaultRequestHeaders.Remove("X-API-KEY");
         _httpClient.DefaultRequestHeaders.Add("X-API-KEY", _apiKey);
         var requestBody = new TokenRequest
         {
@@ -101,7 +133,6 @@ public class MarkMonitorClient
             new StringContent(JsonConvert.SerializeObject(requestBody), Encoding.UTF8, "application/json"));
 
         _logger.LogDebug("Reading authentication response");
-        response.EnsureSuccessStatusCode();
         var content = await response.Content.ReadAsStringAsync();
 
         _logger.LogTrace("Authentication response code: {ResponseCode}", response.StatusCode);
@@ -110,6 +141,9 @@ public class MarkMonitorClient
             _logger.LogDebug("Deserializing token response");
             var tokenResponse = JsonConvert.DeserializeObject<TokenResponse>(content);
             _bearerToken = tokenResponse.BearerToken;
+            // Subtract a small safety buffer so a request that starts just before expiry doesn't
+            // race the token dying mid-flight.
+            _tokenExpiresAtUtc = _timeProvider.GetUtcNow().UtcDateTime.AddSeconds(tokenResponse.ExpiresIn - 30);
             _logger.LogDebug("Bearer token received and valid for {TokenExpiration} seconds",
                 tokenResponse.ExpiresIn);
             _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _bearerToken);
@@ -130,7 +164,7 @@ public class MarkMonitorClient
         _logger.MethodEntry();
         try
         {
-            EnsureAuthenticated();
+            await EnsureAuthenticatedAsync();
             _logger.LogInformation("Retrieving certificate inventory from MarkMonitor");
             var certificateOrders =
                 await ListCertificateOrdersAsync(0, caId, sort, limit); //todo: providerId support???
@@ -140,6 +174,15 @@ public class MarkMonitorClient
             foreach (var certificateDetail in certificateOrders)
             {
                 _logger.LogInformation("Adding certificate {CertificateId} to buffer", certificateDetail.Id);
+
+                if (certificateDetail.Cert == null)
+                {
+                    _logger.LogWarning(
+                        "Certificate {CertificateId} has no cert details yet (status {Status}) - skipping it for this sync rather than aborting the rest of the page",
+                        certificateDetail.Id, certificateDetail.Status);
+                    continue;
+                }
+
                 var certStatus = MarkMonitorCertificateStatusToCAStatus(certificateDetail);
                 _logger.LogTrace("Certificate {CertificateId} status: {CertificateStatus}", certificateDetail.Id,
                     certStatus);
@@ -199,7 +242,7 @@ public class MarkMonitorClient
         catch (Exception e)
         {
             _logger.LogError("An error has occurred: {EMessage}", e.Message);
-            return 0;
+            throw;
         }
         finally
         {
@@ -214,9 +257,9 @@ public class MarkMonitorClient
         var query = new List<string>();
         if (page > 0) query.Add($"page={page}");
         if (limit > 0) query.Add($"size={limit}");
-        if (!string.IsNullOrEmpty(sort)) query.Add($"sort={sort}");
+        if (!string.IsNullOrEmpty(sort)) query.Add($"sort={Uri.EscapeDataString(sort)}");
         if (providerId > 0) query.Add($"providerId={providerId}");
-        if (!string.IsNullOrEmpty(orgId)) query.Add($"organizationId={orgId}");
+        if (!string.IsNullOrEmpty(orgId)) query.Add($"organizationId={Uri.EscapeDataString(orgId)}");
         _logger.MethodExit();
         return query;
     }
@@ -227,8 +270,8 @@ public class MarkMonitorClient
         var query = new List<string>();
         if (page > 0) query.Add($"page={page}");
         if (limit > 0) query.Add($"size={limit}");
-        if (!string.IsNullOrEmpty(sort)) query.Add($"sort={sort}");
-        if (!string.IsNullOrEmpty(name)) query.Add($"name={name}");
+        if (!string.IsNullOrEmpty(sort)) query.Add($"sort={Uri.EscapeDataString(sort)}");
+        if (!string.IsNullOrEmpty(name)) query.Add($"name={Uri.EscapeDataString(name)}");
 
         _logger.LogTrace("Query string: {Query}", query);
         _logger.MethodExit();
@@ -239,7 +282,7 @@ public class MarkMonitorClient
         int limit)
     {
         _logger.MethodEntry();
-        EnsureAuthenticated();
+        await EnsureAuthenticatedAsync();
         var output = new List<OrderContent>();
         try
         {
@@ -284,7 +327,7 @@ public class MarkMonitorClient
         catch (Exception e)
         {
             _logger.LogError("An error has occurred: {EMessage}", e.Message);
-            return null;
+            throw;
         }
         finally
         {
@@ -296,7 +339,7 @@ public class MarkMonitorClient
         string name = "")
     {
         _logger.MethodEntry();
-        EnsureAuthenticated();
+        await EnsureAuthenticatedAsync();
         var output = new List<MarkMonitorOrganizationResponse>();
         try
         {
@@ -345,6 +388,33 @@ public class MarkMonitorClient
         catch (Exception e)
         {
             _logger.LogError("An error has occurred: {EMessage}", e.Message);
+            throw;
+        }
+        finally
+        {
+            _logger.MethodExit();
+        }
+    }
+
+    public async Task<MarkMonitorOrganizationResponse> GetOrganizationAsync(string orgId)
+    {
+        _logger.MethodEntry();
+        try
+        {
+            ValidateGuidFormat(orgId, nameof(orgId), "MarkMonitor organization ID");
+            await EnsureAuthenticatedAsync();
+            var url = $"{BaseUrl}/certs/v1/organization/{orgId}";
+            _logger.LogDebug("Getting organization from MarkMonitor {Url}", url);
+            var response = await _httpClient.GetAsync(url);
+            var content = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode) throw new Exception(BuildErrorString(content));
+
+            return JsonConvert.DeserializeObject<MarkMonitorOrganizationResponse>(content);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError("An error has occurred: {EMessage}", e.Message);
             return null;
         }
         finally
@@ -356,7 +426,7 @@ public class MarkMonitorClient
     public async Task<List<MarkMonitorGroup>> ListGroupsAsync(int page = 0, int limit = 0, string name = "")
     {
         _logger.MethodEntry();
-        EnsureAuthenticated();
+        await EnsureAuthenticatedAsync();
         var output = new List<MarkMonitorGroup>();
         try
         {
@@ -387,6 +457,8 @@ public class MarkMonitorClient
         }
         catch (Exception e)
         {
+            // Group resolution is an optional, best-effort lookup (EnrollCertificateAsync falls back
+            // to no group on failure) - deliberately swallowed rather than failing the enrollment.
             _logger.LogError("An error has occurred: {EMessage}", e.Message);
             return null;
         }
@@ -396,39 +468,71 @@ public class MarkMonitorClient
         }
     }
 
+    /// <summary>Fetches the raw order content for a single order ID (used both to build the
+    /// public-facing AnyCAPluginCertificate and, internally, to verify an order's owning
+    /// organization before revoking it).</summary>
+    private async Task<OrderContent> FetchOrderAsync(string orderId)
+    {
+        ValidateGuidFormat(orderId, nameof(orderId), "MarkMonitor order ID");
+        await EnsureAuthenticatedAsync();
+
+        _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _bearerToken);
+        _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        var response = await _httpClient.GetAsync($"{BaseUrl}/certs/v1/order/{orderId}");
+        var content = await response.Content.ReadAsStringAsync();
+        if (!response.IsSuccessStatusCode) throw new Exception(BuildErrorString(content));
+        return JsonConvert.DeserializeObject<OrderContent>(content);
+    }
+
+    /// <summary>Resolves a CA connection's configured OrgId (which may be a friendly name or a
+    /// GUID) to the organization's real GUID.</summary>
+    private async Task<string> ResolveOrganizationIdAsync(string orgNameOrId)
+    {
+        if (Guid.TryParse(orgNameOrId, out _)) return orgNameOrId;
+        var orgs = await ListOrganizationsAsync(0, 1, orgNameOrId);
+        return orgs.FirstOrDefault()?.Id;
+    }
+
     public async Task<AnyCAPluginCertificate> GetSingleOrderAsync(string orderId)
     {
         try
         {
-            EnsureAuthenticated();
+            var order = await FetchOrderAsync(orderId);
 
-            _httpClient.DefaultRequestHeaders.Authorization =
-                new AuthenticationHeaderValue("Bearer", _bearerToken);
-            _httpClient.DefaultRequestHeaders.Accept.Add(
-                new MediaTypeWithQualityHeaderValue("application/json"));
-
-            var response = await _httpClient.GetAsync($"{BaseUrl}/certs/v1/order/{orderId}");
-            var content = await response.Content.ReadAsStringAsync();
-            OrderContent order;
-            if (response.IsSuccessStatusCode)
-                order = JsonConvert.DeserializeObject<OrderContent>(content);
-            else
-                throw new Exception(BuildErrorString(content));
+            // order.Cert can be null for an order that hasn't progressed far enough yet (e.g.
+            // CREATED/DIGI_NEEDS_CSR) - same class of gap already fixed in GetCertificateInventoryAsync.
+            DateTime? revocationDate = null;
+            if (order.Cert?.RevokeStatus == "REVOKED") revocationDate = Convert.ToDateTime(order.Cert.DateValidUntil);
 
             return new AnyCAPluginCertificate
             {
                 CARequestID = order.Id,
-                Certificate = order.Cert.EndEntityCert,
+                Certificate = order.Cert?.EndEntityCert,
                 Status = MarkMonitorCertificateStatusToCAStatus(order),
                 ProductID = order.CertType,
-                RevocationDate = Convert.ToDateTime(order.Cert.DaysRemaining)
+                RevocationDate = revocationDate
             };
         }
         catch (Exception e)
         {
+            // Rethrow rather than swallow to null - GetSingleRecord (the connector method that
+            // calls this) needs the real exception to log a failure instead of silently reporting
+            // "not found" for what was actually an auth/network/parsing error.
             _logger.LogError("An error has occurred: {EMessage}", e.Message);
-            return null;
+            throw;
         }
+    }
+
+    /// <summary>
+    /// Order IDs are interpolated directly into request URLs - a corrupted or manipulated
+    /// CARequestID should fail fast with a clear error rather than silently producing an unexpected
+    /// path segment.
+    /// </summary>
+    private static void ValidateGuidFormat(string value, string paramName, string description)
+    {
+        if (!Guid.TryParse(value, out _))
+            throw new ArgumentException($"'{value}' is not a valid {description} (expected a GUID)", paramName);
     }
 
     private string getCsrAlgorithm(Pkcs10CertificationRequest csr)
@@ -452,9 +556,42 @@ public class MarkMonitorClient
         MarkMonitorConfig config)
     {
         _logger.MethodEntry();
+        var dedupeKey = $"{config.OrgName}|{orderType}|{subject}|{csr}";
+        TaskCompletionSource<EnrollmentResult> ownedReservation = null;
         try
         {
-            EnsureAuthenticated();
+            await EnsureAuthenticatedAsync();
+
+            var now = _timeProvider.GetUtcNow().UtcDateTime;
+            if (_recentEnrollments.TryGetValue(dedupeKey, out var existing) && existing.ExpiresAtUtc > now)
+            {
+                _logger.LogWarning(
+                    "An identical enrollment for subject {Subject} was already submitted in the last {Minutes} minute(s) - awaiting that result instead of creating a duplicate order",
+                    subject, RecentEnrollmentWindow.TotalMinutes);
+                return await existing.Tcs.Task;
+            }
+
+            // Reserve this key *before* doing any real work, so a retry that arrives while this
+            // call is still in flight (the scenario this cache actually exists to prevent) finds
+            // the reservation and awaits it, rather than racing to create a second order.
+            var candidateTcs =
+                new TaskCompletionSource<EnrollmentResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+            // AddOrUpdate, not GetOrAdd: an expired entry must be replaced, not returned as-is -
+            // GetOrAdd would hand back the stale (already-completed) reservation forever once one
+            // exists for this key.
+            var reserved = _recentEnrollments.AddOrUpdate(
+                dedupeKey,
+                (now + RecentEnrollmentWindow, candidateTcs),
+                (_, current) => current.ExpiresAtUtc > now ? current : (now + RecentEnrollmentWindow, candidateTcs));
+            if (reserved.Tcs != candidateTcs)
+            {
+                _logger.LogWarning(
+                    "An identical enrollment for subject {Subject} is already in flight - awaiting that result instead of creating a duplicate order",
+                    subject);
+                return await reserved.Tcs.Task;
+            }
+
+            ownedReservation = candidateTcs;
 
             var caseInsensitiveParams = new Dictionary<string, string>(productParams, StringComparer.OrdinalIgnoreCase);
 
@@ -463,29 +600,22 @@ public class MarkMonitorClient
             var additionalEmailsList = new List<string>();
             if (!string.IsNullOrEmpty(additionalEmails))
             {
-                _logger.LogTrace("Additional emails provided: {AdditionalEmails}", additionalEmails);
                 additionalEmails = additionalEmails.Replace(" ", ",");
-                additionalEmailsList = additionalEmails.Split(',').ToList();
+                additionalEmailsList = additionalEmails
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
             }
 
-            var orgIds = await ListOrganizationsAsync(0, 1, config.OrgName);
-            _logger.LogTrace("Organizations found: {@OrgIds}", orgIds);
-            var org = orgIds.FirstOrDefault();
-            var orgId = org?.Id;
-            _logger.LogTrace("Organization ID: {OrgId}", orgId);
-            if (string.IsNullOrEmpty(orgId))
-            {
-                _logger.LogError("Organization ID not found for {OrgName}", config.OrgName);
-                throw new InvalidDataException($"Organization ID '{config.OrgName}' not found");
-            }
+            var org = await ResolveOrganizationAsync(config.OrgName);
+            var orgIdGuid = Guid.Parse(org.Id);
 
-            var orgIdGuid = Guid.Parse(orgId);
-
-            var comments = caseInsensitiveParams.GetValueOrDefault("comments", "Requested via Keyfactor Command");
+            var comments = caseInsensitiveParams.GetValueOrDefault(
+                MarkMonitorCAPluginConfig.EnrollmentConfigConstants.Comments, "Requested via Keyfactor Command");
             _logger.LogTrace("Comments: {Comments}", comments);
-            var locale = caseInsensitiveParams.GetValueOrDefault("locale", "en");
+            var locale = caseInsensitiveParams.GetValueOrDefault(
+                MarkMonitorCAPluginConfig.EnrollmentConfigConstants.Locale, "en");
             _logger.LogTrace("Locale: {Locale}", locale);
-            var provider = caseInsensitiveParams.GetValueOrDefault("provider", "DIGICERT");
+            var provider = caseInsensitiveParams.GetValueOrDefault(
+                MarkMonitorCAPluginConfig.EnrollmentConfigConstants.Provider, "DIGICERT");
             _logger.LogTrace("Provider: {Provider}", provider);
 
             _logger.LogDebug("Resolving MarkMonitor contact for order");
@@ -509,43 +639,17 @@ public class MarkMonitorClient
             _logger.LogDebug("Resolving MarkMonitor group for order");
             var groupParam = caseInsensitiveParams.GetValueOrDefault(
                 MarkMonitorCAPluginConfig.EnrollmentConfigConstants.MarkmonitorGroup);
-            Guid? groupIdGuid = null;
-            if (!string.IsNullOrWhiteSpace(groupParam))
-            {
-                if (Guid.TryParse(groupParam, out var parsedGroupId))
-                {
-                    groupIdGuid = parsedGroupId;
-                }
-                else
-                {
-                    var groups = await ListGroupsAsync(0, 0, groupParam);
-                    var matchedGroup = groups?.FirstOrDefault(g =>
-                        string.Equals(g.Name, groupParam, StringComparison.OrdinalIgnoreCase));
-                    if (matchedGroup != null)
-                        groupIdGuid = Guid.Parse(matchedGroup.Id);
-                    else
-                        _logger.LogWarning("MarkMonitor group '{GroupParam}' could not be resolved to an ID",
-                            groupParam);
-                }
-            }
+            var groupIdGuid = await ResolveGroupIdAsync(groupParam);
 
-            var validDcvMethods = Enum.GetValues<DomainControlValidationMethods>()
-                .Select(m => m.GetDescription()).ToList();
-            var dcvMethod = caseInsensitiveParams.GetValueOrDefault(
+            var dcvMethod = ValidateDcvMethod(caseInsensitiveParams.GetValueOrDefault(
                 MarkMonitorCAPluginConfig.EnrollmentConfigConstants.DCVMethod,
-                DomainControlValidationMethods.Email.GetDescription());
-            if (!validDcvMethods.Contains(dcvMethod, StringComparer.OrdinalIgnoreCase))
-            {
-                _logger.LogWarning("Invalid DCVMethod '{DcvMethod}' specified, defaulting to EMAIL", dcvMethod);
-                dcvMethod = DomainControlValidationMethods.Email.GetDescription();
-            }
+                DomainControlValidationMethods.Email.GetDescription()));
 
             // Lookup order type in CertOrderTypes enum
             _logger.LogDebug("Looking up order type {OrderType} in CertOrderTypes enum", orderType);
             var certOrderType = Enum.Parse<CertOrderTypes>(orderType);
 
             _logger.LogDebug("Deserializing CSR");
-            _logger.LogTrace("CSR: {Csr}", csr);
             var csrObject = new Pkcs10CertificationRequest(GetCsrBytes(csr));
             var csrInfo = csrObject.GetCertificationRequestInfo();
 
@@ -555,7 +659,6 @@ public class MarkMonitorClient
 
             _logger.LogDebug("Converting CSR to PEM");
             var csrPem = PemUtilities.DERToPEM(csrObject.GetEncoded(), PemUtilities.PemObjectType.CertRequest);
-            _logger.LogTrace("CSR PEM: {CsrPem}", csrPem);
 
             _logger.LogDebug("Constructing certificate order object");
             var certOrder = new MarkMonitorCreateOrderRequest
@@ -574,6 +677,11 @@ public class MarkMonitorClient
                     CommonName = cleanSubject(subject),
                     Csr = csrPem.Replace("\r", ""),
                     DcvMethod = dcvMethod,
+                    // dcvEmails is not marked required by MarkMonitor's schema, and leaving it empty
+                    // has been verified against the live API to succeed for DCVMethod=EMAIL -
+                    // MarkMonitor falls back to the domain/org's registered DCV contacts. Revisit if
+                    // that ever changes; there's no documented case where an explicit approver email
+                    // is actually required here.
                     DcvEmails = new List<DcvEmail>(),
                     AlgorithmHash = requestAlgorithm
                 }
@@ -587,23 +695,96 @@ public class MarkMonitorClient
             if (order == null) throw new Exception($"Failed to enroll certificate `{subject}` with MarkMonitor");
 
             _logger.LogInformation("Certificate enrolled successfully");
-            return new EnrollmentResult
+            _logger.LogInformation(
+                "Order {CARequestID} was created with ContactId {ContactId} and GroupId {GroupId}", order.Id,
+                resolvedContact?.Id, groupIdGuid);
+            var enrollmentResult = new EnrollmentResult
             {
                 CARequestID = order.Id,
                 Certificate = order.Cert?.EndEntityCert,
                 Status = MarkMonitorCertificateStatusToCAStatus(order),
                 StatusMessage = "MarkMonitor order status: " + order.Status
             };
+            ownedReservation.SetResult(enrollmentResult);
+            return enrollmentResult;
         }
         catch (Exception e)
         {
             _logger.LogError("An error has occurred: {EMessage}", e.Message);
-            return null;
+            if (ownedReservation != null)
+            {
+                // Don't cache a failed attempt - a retry after a real failure should get a fresh
+                // attempt, not be stuck replaying this exception until the window expires.
+                ownedReservation.SetException(e);
+                _recentEnrollments.TryRemove(dedupeKey, out _);
+            }
+
+            throw;
         }
         finally
         {
             _logger.MethodExit();
         }
+    }
+
+    private async Task<MarkMonitorOrganizationResponse> ResolveOrganizationAsync(string orgNameOrId)
+    {
+        MarkMonitorOrganizationResponse org;
+        if (Guid.TryParse(orgNameOrId, out _))
+        {
+            _logger.LogDebug("OrgId '{OrgName}' looks like a GUID - fetching the organization directly",
+                orgNameOrId);
+            org = await GetOrganizationAsync(orgNameOrId);
+        }
+        else
+        {
+            var orgs = await ListOrganizationsAsync(0, 1, orgNameOrId);
+            _logger.LogTrace("Organizations found: {@Orgs}", orgs);
+            // ListOrganizationsAsync throws rather than returning null on error, so orgs is never
+            // null here - just possibly empty.
+            org = orgs.FirstOrDefault();
+        }
+
+        _logger.LogTrace("Organization ID: {OrgId}", org?.Id);
+        if (string.IsNullOrEmpty(org?.Id))
+        {
+            _logger.LogError("Organization ID not found for {OrgName}", orgNameOrId);
+            throw new InvalidDataException($"Organization ID '{orgNameOrId}' not found");
+        }
+
+        return org;
+    }
+
+    // Unlike contacts (scoped to an organization's own Contacts list), group resolution can't be
+    // scoped to the configured organization: MarkMonitor's Auth API models groups as
+    // account/tenant-wide - /auth/v1/group has no organizationId filter, and the Group schema it
+    // returns (id/name/description/dateCreated/dateUpdated) has no organizationId field to check
+    // against either. There is nothing in this API to scope against, so a group name/GUID that
+    // resolves at all is accepted as-is; matching is by exact (case-insensitive) name rather than a
+    // substring, which is the closest available mitigation.
+    private async Task<Guid?> ResolveGroupIdAsync(string groupParam)
+    {
+        if (string.IsNullOrWhiteSpace(groupParam)) return null;
+
+        if (Guid.TryParse(groupParam, out var parsedGroupId)) return parsedGroupId;
+
+        var groups = await ListGroupsAsync(0, 0, groupParam);
+        var matchedGroup = groups?.FirstOrDefault(g =>
+            string.Equals(g.Name, groupParam, StringComparison.OrdinalIgnoreCase));
+        if (matchedGroup != null) return Guid.Parse(matchedGroup.Id);
+
+        _logger.LogWarning("MarkMonitor group '{GroupParam}' could not be resolved to an ID", groupParam);
+        return null;
+    }
+
+    private string ValidateDcvMethod(string dcvMethod)
+    {
+        var validDcvMethods = Enum.GetValues<DomainControlValidationMethods>()
+            .Select(m => m.GetDescription()).ToList();
+        if (validDcvMethods.Contains(dcvMethod, StringComparer.OrdinalIgnoreCase)) return dcvMethod;
+
+        _logger.LogWarning("Invalid DCVMethod '{DcvMethod}' specified, defaulting to EMAIL", dcvMethod);
+        return DomainControlValidationMethods.Email.GetDescription();
     }
 
     private MarkMonitorGetContactResponse ResolveContact(List<MarkMonitorGetContactResponse> contacts,
@@ -643,9 +824,23 @@ public class MarkMonitorClient
         _logger.MethodEntry();
         try
         {
-            // Search for the CN field in the Subject
+            if (string.IsNullOrWhiteSpace(subject)) return subject;
+
+            try
+            {
+                var cnValues = new X509Name(subject).GetValueList(X509Name.CN);
+                if (cnValues.Count > 0) return (string)cnValues[cnValues.Count - 1];
+            }
+            catch (Exception e)
+            {
+                _logger.LogDebug(
+                    "Could not parse subject '{Subject}' as an X509 DN, falling back to string search: {EMessage}",
+                    subject, e.Message);
+            }
+
+            // Fallback for a subject that isn't a fully valid DN (e.g. bare "CN=foo" with no other RDNs).
             var cnPrefix = "CN=";
-            var cnIndex = subject.IndexOf(cnPrefix, StringComparison.Ordinal);
+            var cnIndex = subject.IndexOf(cnPrefix, StringComparison.OrdinalIgnoreCase);
             if (cnIndex < 0) return subject;
             var cnStart = cnIndex + cnPrefix.Length;
             var cnEnd = subject.IndexOf(",", cnStart, StringComparison.Ordinal);
@@ -663,14 +858,16 @@ public class MarkMonitorClient
         _logger.MethodEntry();
         _logger.LogTrace("CommonName: {CommonName}", request.Cert.CommonName);
         _logger.LogTrace("OrganizationId: {OrganizationId}", request.OrganizationId);
+        _logger.LogTrace("GroupId: {GroupId}", request.GroupId);
         _logger.LogTrace("CertType: {CertType}", request.CertType);
         _logger.LogTrace("Locale: {Locale}", request.Locale);
         _logger.LogTrace("Provider: {Provider}", request.Provider);
         _logger.LogTrace("Comments: {Comments}", request.Comments);
-        _logger.LogTrace("AdditionalEmails: {AdditionalEmails}", request.AdditionalEmails);
+        // Deliberately not logging AdditionalEmails (requester PII) or the CSR/full Cert object -
+        // just enough to confirm the shape of the request without leaking their content.
+        _logger.LogTrace("AdditionalEmails count: {AdditionalEmailsCount}", request.AdditionalEmails?.Count ?? 0);
         _logger.LogTrace("SkipPrice: {SkipPrice}", request.SkipPrice);
-        _logger.LogTrace("CSR: {Csr}", request.Cert.Csr);
-        _logger.LogTrace("Cert: {@Cert}", request.Cert);
+        _logger.LogTrace("DcvMethod: {DcvMethod}", request.Cert.DcvMethod);
         _logger.MethodExit();
     }
 
@@ -679,7 +876,7 @@ public class MarkMonitorClient
         _logger.MethodEntry();
         try
         {
-            EnsureAuthenticated();
+            await EnsureAuthenticatedAsync();
             logCreateOrderRequest(request);
 
             var url = $"{BaseUrl}/certs/v1/order";
@@ -688,9 +885,6 @@ public class MarkMonitorClient
                 JsonConvert.SerializeObject(request),
                 Encoding.UTF8, "application/json"
             );
-            _logger.LogTrace("Create order payload: {@Payload}", jsonPayload);
-            _logger.LogTrace("Request JSON: {Json}", request.JSONString());
-            Console.WriteLine(jsonPayload.ReadAsStringAsync());
             var response = await _httpClient.PostAsync(url, jsonPayload);
             _logger.LogTrace("Response: {Response}", response);
 
@@ -724,12 +918,13 @@ public class MarkMonitorClient
         _logger.MethodEntry();
         try
         {
+            ValidateGuidFormat(orderId, nameof(orderId), "MarkMonitor order ID");
             _logger.LogInformation("Revoking certificate {CertificateId}", orderId);
-            EnsureAuthenticated();
+            await EnsureAuthenticatedAsync();
 
             var url = $"{BaseUrl}/certs/v1/order/{orderId}/cancel";
             _logger.LogDebug("Revoking certificate at {Url}", url);
-            var payload = new StringContent("", Encoding.UTF8, "application/json");
+            var payload = new StringContent("{}", Encoding.UTF8, "application/json");
             var response = await _httpClient.PatchAsync(url, payload);
 
             _logger.LogDebug("Reading response content");
@@ -758,8 +953,9 @@ public class MarkMonitorClient
         _logger.MethodEntry();
         try
         {
+            ValidateGuidFormat(orderId, nameof(orderId), "MarkMonitor order ID");
             _logger.LogInformation("Revoking certificate {CertificateId}", orderId);
-            EnsureAuthenticated();
+            await EnsureAuthenticatedAsync();
 
             var url = $"{BaseUrl}/certs/v1/order/{orderId}/reissue";
             _logger.LogDebug("Reissuing certificate at {Url}", url);
@@ -792,17 +988,50 @@ public class MarkMonitorClient
         }
     }
 
+    /// <summary>
+    /// Revokes the certificate for the given order. MarkMonitor's revoke action (PATCH
+    /// /certs/v1/order/{id}/revoke) has no field for a revocation reason code - its request schema
+    /// only accepts cert/ignoreOrgCheck/additionalEmails - so the <paramref name="reason"/> parameter
+    /// cannot be sent to MarkMonitor. It's accepted (rather than removed) to match
+    /// IAnyCAPlugin.Revoke's signature; a non-default value is logged so it's visible that the
+    /// reason was received but couldn't be forwarded, rather than silently dropped.
+    /// </summary>
     public async Task<bool> RevokeCertificateAsync(string orderId, string orgName = null, uint reason = 0)
     {
         _logger.MethodEntry();
         try
         {
+            ValidateGuidFormat(orderId, nameof(orderId), "MarkMonitor order ID");
             _logger.LogInformation("Revoking certificate associated with order {OrderId}", orderId);
-            EnsureAuthenticated();
+            if (reason != 0)
+                _logger.LogWarning(
+                    "Revocation reason {Reason} was requested for order {OrderId}, but MarkMonitor's revoke API has no field for a reason code - it will not be sent",
+                    reason, orderId);
+            await EnsureAuthenticatedAsync();
+
+            // MarkMonitor's own ignoreOrgCheck=false default only guards against revoking an order
+            // that belongs to a different reseller account entirely - it has no notion of the
+            // specific sub-organization this CA connector is scoped to. That distinction matters most
+            // for RenewOrReissue, where the order ID being revoked comes from Command's
+            // ICertificateDataReader rather than from this org's own enrollment - so verify it here
+            // rather than trusting the caller (or MarkMonitor) to have scoped it correctly.
+            if (!string.IsNullOrWhiteSpace(orgName))
+            {
+                var expectedOrgId = await ResolveOrganizationIdAsync(orgName);
+                var order = await FetchOrderAsync(orderId);
+                if (expectedOrgId == null ||
+                    !string.Equals(order.OrganizationId, expectedOrgId, StringComparison.OrdinalIgnoreCase))
+                {
+                    var orgMismatchMsg =
+                        $"Order {orderId} belongs to a different organization than the configured '{orgName}' - refusing to revoke it";
+                    _logger.LogError("{ErrMsg}", orgMismatchMsg);
+                    throw new Exception(orgMismatchMsg);
+                }
+            }
 
             var url = $"{BaseUrl}/certs/v1/order/{orderId}/revoke";
             _logger.LogDebug("Revoking certificate at {Url}", url);
-            var payload = new StringContent("", Encoding.UTF8, "application/json");
+            var payload = new StringContent("{}", Encoding.UTF8, "application/json");
             var response = await _httpClient.PatchAsync(url, payload);
 
             _logger.LogDebug("Reading response content");
@@ -830,9 +1059,31 @@ public class MarkMonitorClient
         }
     }
 
-    private void EnsureAuthenticated()
+    private bool TokenNeedsRefresh() =>
+        string.IsNullOrEmpty(_bearerToken) || _tokenExpiresAtUtc == null ||
+        _timeProvider.GetUtcNow().UtcDateTime >= _tokenExpiresAtUtc;
+
+    private async Task EnsureAuthenticatedAsync()
     {
-        if (string.IsNullOrEmpty(_bearerToken)) AuthenticateAsync().RunSynchronously();
+        // Double-checked locking: without the lock, two callers can both see an expired token,
+        // both call AuthenticateAsync concurrently, and race writing _bearerToken/_tokenExpiresAtUtc
+        // and the shared HttpClient's Authorization header - one of them can end up sending requests
+        // under the other's (or a half-written) token.
+        if (!TokenNeedsRefresh()) return;
+
+        await _authLock.WaitAsync();
+        try
+        {
+            if (TokenNeedsRefresh())
+            {
+                _logger.LogDebug("No valid bearer token on hand - authenticating");
+                await AuthenticateAsync();
+            }
+        }
+        finally
+        {
+            _authLock.Release();
+        }
     }
 
     private static string BuildErrorString(string jsonString)
@@ -878,9 +1129,13 @@ public class MarkMonitorClient
         else if (json["detail"] != null)
             errorMessages.Add(json["detail"].ToString());
 
-        return errorMessages.Any()
-            ? string.Join(Environment.NewLine, errorMessages)
-            : $"No recognized error format found in response: {jsonString}";
+        if (errorMessages.Any()) return string.Join(Environment.NewLine, errorMessages);
+
+        // Unrecognized shape - order/contact payloads can carry customer PII (name, email), so
+        // truncate rather than dumping the full response body verbatim into an error-level log.
+        const int maxLength = 200;
+        var truncated = jsonString.Length > maxLength ? jsonString[..maxLength] + "... (truncated)" : jsonString;
+        return $"No recognized error format found in response: {truncated}";
     }
 
     private byte[] GetCsrBytes(string csr)
@@ -982,11 +1237,15 @@ public class MarkMonitorClient
             order.Status.Equals(OrderStatus.Created.GetDescription(), StringComparison.OrdinalIgnoreCase)
         )
         {
-            _logger.LogInformation("MarkMonitor order {OrderId} status 'INITIALIZED'", order.Id);
-            _logger.LogInformation(
-                "MarkMonitor order {OrderId} may still be in process and/or require manual intervention", order.Id);
+            // EndEntityStatus.INITIALIZED is not what the AnyGatewayREST framework treats as
+            // "accepted, still pending" - that's EXTERNALVALIDATION. Returning INITIALIZED here
+            // caused the gateway to report a hard enrollment failure for an order that had, in
+            // fact, been created successfully at MarkMonitor and was simply awaiting DCV/issuance
+            // (confirmed against a real AnyGatewayREST + Command deployment - github issue #2).
+            _logger.LogInformation("MarkMonitor order {OrderId} status 'CREATED' - pending external validation",
+                order.Id);
             _logger.MethodExit();
-            return (int)EndEntityStatus.INITIALIZED;
+            return (int)EndEntityStatus.EXTERNALVALIDATION;
         }
 
         _logger.LogError("MarkMonitor order {OrderId} status could not be dettermined defaulting to 'FAILED'",
@@ -994,15 +1253,6 @@ public class MarkMonitorClient
         _logger.MethodExit();
         return (int)EndEntityStatus.FAILED;
     }
-    //
-    // private static int MarkMonitorCertificateStatusToCAStatus(Certificate cert)
-    // {
-    //     if (cert.RevokedAt != null) return (int)EndEntityStatus.REVOKED;
-    //
-    //     if (cert.HasCertificate && cert.IsValid) return (int)EndEntityStatus.GENERATED;
-    //
-    //     return (int)EndEntityStatus.FAILED;
-    // }
 }
 
 public class ConfigurationValidationException : Exception

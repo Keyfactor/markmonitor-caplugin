@@ -31,9 +31,8 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
     private MarkMonitorConfig _config;
     private MarkMonitorClient Client;
     private bool _markMonitorClientWasInjected = false;
-
-
-    private Dictionary<int, string> DCVTokens { get; } = new();
+    private MarkMonitorClient _cachedClient;
+    private readonly SemaphoreSlim _clientLock = new(1, 1);
 
     public MarkMonitorCAPlugin()
     {
@@ -103,6 +102,12 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             var order = await client.GetSingleOrderAsync(caRequestId);
             _logger.LogInformation("Order details retrieved for CARequestID: {CARequestID}", caRequestId);
             return order;
+        }
+        catch (Exception e)
+        {
+            _logger.LogError("Failed to get order details for CARequestID {CARequestID}: {EMessage}", caRequestId,
+                e.Message);
+            throw;
         }
         finally
         {
@@ -199,19 +204,68 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             var enrollResult = await client.EnrollCertificateAsync(csr, subject, san, productInfo.ProductID,
                 productInfo.ProductParameters, _config);
 
-            if (enrollResult == null)
-            {
-                _logger.LogError("Enrollment failed for subject: {Subject}", subject);
-                throw new Exception($"Enrollment failed for subject: {subject}");
-            }
             _logger.LogTrace("Enrollment result: {EnrollResult}", JsonConvert.SerializeObject(enrollResult));
             _logger.LogInformation("Enrollment completed successfully for subject: {Subject}", subject);
-            
+
+            if (enrollmentType == EnrollmentType.RenewOrReissue)
+                await RevokePriorCertificateIfPresentAsync(client, productInfo, subject, enrollResult.CARequestID);
+
             return enrollResult;
+        }
+        catch (Exception e)
+        {
+            _logger.LogError("Enrollment failed for subject {Subject}: {EMessage}", subject, e.Message);
+            throw;
         }
         finally
         {
             _logger.MethodExit();
+        }
+    }
+
+    /// <summary>
+    /// For a RenewOrReissue enrollment, the AnyGateway core framework passes the prior
+    /// certificate's serial number in productInfo.ProductParameters["PriorCertSN"]. Resolves it to a
+    /// CARequestID via the injected ICertificateDataReader and revokes it now that the replacement
+    /// certificate has issued successfully. Falls back to treating the enrollment as a plain new
+    /// issuance (no revoke attempted) if PriorCertSN is missing or can't be resolved - a failure to
+    /// revoke the old certificate should not fail delivery of the new one.
+    /// </summary>
+    private async Task RevokePriorCertificateIfPresentAsync(MarkMonitorClient client,
+        EnrollmentProductInfo productInfo, string subject, string newCaRequestId)
+    {
+        var priorCertSn = productInfo.ProductParameters?
+            .FirstOrDefault(kv => string.Equals(kv.Key, "PriorCertSN", StringComparison.OrdinalIgnoreCase)).Value;
+
+        if (string.IsNullOrWhiteSpace(priorCertSn))
+        {
+            _logger.LogWarning(
+                "Enrollment for {Subject} was requested as RenewOrReissue but no PriorCertSN was provided - treating it as a new enrollment",
+                subject);
+            return;
+        }
+
+        var priorRequestId = await _certificateDataReader.GetRequestIDBySerialNumber(priorCertSn);
+        if (string.IsNullOrWhiteSpace(priorRequestId))
+        {
+            _logger.LogWarning(
+                "Could not resolve a CARequestID for PriorCertSN {PriorCertSn} - the prior certificate will not be revoked",
+                priorCertSn);
+            return;
+        }
+
+        try
+        {
+            _logger.LogInformation(
+                "Revoking prior certificate {PriorRequestId} (serial {PriorCertSn}) after it was replaced by {NewCaRequestId}",
+                priorRequestId, priorCertSn, newCaRequestId);
+            await client.RevokeCertificateAsync(priorRequestId, _config.OrgName);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(
+                "Failed to revoke prior certificate {PriorRequestId} after it was replaced by {NewCaRequestId}: {EMessage}",
+                priorRequestId, newCaRequestId, e.Message);
         }
     }
 
@@ -275,14 +329,14 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         if (string.IsNullOrWhiteSpace(apiUsername))
             errors.Add($"A valid service account `{MarkMonitorConstants.ConfigConstants.ApiUsername}` is required");
         else _logger.LogDebug($"{MarkMonitorConstants.ConfigConstants.ApiUsername} is set");
-        _logger.LogTrace("MarkMonitor API Username: {Username}", apiUsername);
 
         _logger.LogDebug("Checking the API base URL");
         var baseURL = connectionInfo.TryGetValue(MarkMonitorConstants.ConfigConstants.BaseUrl, out var aUrl)
             ? (string)aUrl
             : string.Empty;
         if (string.IsNullOrWhiteSpace(baseURL)) baseURL = "https://api.markmonitor.com";
-        else if (!baseURL.Contains("http")) errors.Add("The Base URL needs http:// or https://");
+        else if (!baseURL.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            errors.Add("The Base URL must start with https:// - credentials and the bearer token are sent to it");
         else _logger.LogDebug($"{MarkMonitorConstants.ConfigConstants.BaseUrl} is set");
         _logger.LogTrace("MarkMonitor API Base URL: {BaseURL}", baseURL);
 
@@ -298,6 +352,13 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         _logger.MethodExit();
     }
 
+    // Considered validating MarkmonitorContact/MarkmonitorGroup here eagerly (at template-save
+    // time) instead of the current behavior - a typo'd value logs a warning and silently falls back
+    // to a default at enroll time. Deferred: doing so would mean making live MarkMonitor API calls
+    // during template save (no other Validate* method in this codebase does that), coupling template
+    // configuration to MarkMonitor's availability/latency, and duplicating the resolution logic
+    // that already lives in EnrollCertificateAsync. That's a real product tradeoff (fail fast on
+    // template save vs. graceful degradation at enroll time) rather than a straightforward bug fix.
     public Task ValidateProductInfo(EnrollmentProductInfo productInfo, Dictionary<string, object> connectionInfo)
     {
         _logger.MethodEntry();
@@ -352,22 +413,38 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         
     }
 
-    private async Task<MarkMonitorClient> CreateAndAuthenticateClientAsync()
+    /// <summary>
+    /// Returns a single MarkMonitorClient shared for the lifetime of this plugin instance, building
+    /// it (or adopting an injected one) on first use only. Each of MarkMonitorClient's own methods
+    /// authenticates/re-authenticates itself lazily as needed, so this method does not need to - and
+    /// deliberately does not - force an eager authentication call on every invocation.
+    /// </summary>
+    internal async Task<MarkMonitorClient> CreateAndAuthenticateClientAsync()
     {
         _logger.MethodEntry();
         try
         {
-            var client = new MarkMonitorClient(
-                _config.BaseUrl,
-                _config.ApiKey,
-                _config.ApiUsername,
-                _config.ApiPassword,
-                true
-            );
-            _logger.LogDebug("Authenticating with MarkMonitor API");
-            _logger.LogTrace("MarkMonitor API Username: {Username}", _config.ApiUsername);
-            await client.AuthenticateAsync();
-            return client;
+            if (_cachedClient != null) return _cachedClient;
+
+            await _clientLock.WaitAsync();
+            try
+            {
+                _cachedClient ??= _markMonitorClientWasInjected
+                    ? Client
+                    : new MarkMonitorClient(
+                        _config.BaseUrl,
+                        _config.ApiKey,
+                        _config.ApiUsername,
+                        _config.ApiPassword,
+                        true
+                    );
+            }
+            finally
+            {
+                _clientLock.Release();
+            }
+
+            return _cachedClient;
         }
         finally
         {

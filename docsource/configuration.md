@@ -44,6 +44,9 @@ Gateway. All parameters are optional. Valid parameters:
 | `MarkmonitorGroup` | The name or GUID of a Markmonitor group to use for the certificate request. | String |
 | `MarkmonitorContact`| The name or GUID of a Markmonitor contact to use for the certificate request. Will use default Markmonitor organization contact if not specified. | String |
 | `DCVMethod`        | The method to use for Domain Control Validation (DCV). Valid values are `EMAIL, DNS_CNAME_TOKEN, HTTP_TOKEN, DNS_TXT_TOKEN`. Default is `EMAIL`. | String |
+| `comments`         | Comments to attach to the MarkMonitor order. Default is `Requested via Keyfactor Command`. | String |
+| `locale`           | Locale to use for the MarkMonitor order. Default is `en`. | String |
+| `provider`         | The certificate provider to use for the order. Default is `DIGICERT` (currently the only provider MarkMonitor's API supports). | String |
 
 ![template_enrollment_params.png](docsource/images/template_enrollment_params.png)
 

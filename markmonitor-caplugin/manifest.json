@@ -1,7 +1,7 @@
 {
   "extensions": {
     "Keyfactor.AnyGateway.Extensions.IAnyCAPlugin": {
-      "GCPCASCAPlugin": {
+      "MarkMonitorCAPlugin": {
         "assemblypath": "MarkMonitorCAPlugin.dll",
         "TypeFullName": "Keyfactor.Extensions.CAPlugin.MarkMonitor.MarkMonitorCAPlugin"
       }

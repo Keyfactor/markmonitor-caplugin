@@ -4,8 +4,8 @@ The MarkMonitor AnyCA Gateway REST plugin extends the certificate lifecycle capa
 MarkMonitor SSL certificate service to Keyfactor Command via the Keyfactor AnyCA Gateway REST. It
 implements `IAnyCAPlugin` and is loaded as a DLL extension by the AnyCA Gateway REST host process —
 it is not a standalone service. See [configuration.md](configuration.md) for full installation and
-configuration details, [architecture.md](architecture.md) for design notes, and
-[development.md](development.md) for local development and testing.
+configuration details, and [DEVELOPMENT.md](../DEVELOPMENT.md) for design notes, local development,
+and testing.
 
 The plugin supports the following capabilities:
 
@@ -36,7 +36,7 @@ Unlike some AnyCA plugins, MarkMonitor uses **two** credentials together:
 
 The bearer token is cached in memory for the lifetime of the plugin's client and refreshed
 automatically shortly before it expires. There is no OAuth client-credentials mode. See
-[architecture.md](architecture.md#request-authentication) for details.
+[DEVELOPMENT.md](../DEVELOPMENT.md#request-authentication) for details.
 
 ## MarkMonitor CA Certificates
 
@@ -66,7 +66,7 @@ placed order comes back with MarkMonitor status `CREATED`, which the plugin maps
 `EXTERNALVALIDATION` (accepted, still pending) rather than a hard failure. Once the order reaches
 `DIGI_ISSUED`, the next incremental CA sync transitions the record to `GENERATED` and the
 certificate becomes available in Command. See the status mapping table in
-[architecture.md](architecture.md#order-status-mapping).
+[DEVELOPMENT.md](../DEVELOPMENT.md#order-status-mapping).
 
 **Mitigation**
 

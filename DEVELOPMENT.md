@@ -1,41 +1,137 @@
+# Developer Guide
+
+This document covers local development, testing, live API smoke-testing, and the internal design of
+the MarkMonitor AnyCA Gateway REST plugin. For production deployment and CA connector configuration
+for end users, see [README.md](README.md).
+
+## Prerequisites
+
+- .NET SDK 8.0 **and** 10.0 (the plugin dual-targets `net8.0` and `net10.0`).
+- A MarkMonitor API key and service account for live smoke-testing (see
+  [Live smoke-testing](#live-smoke-testing-testconsole)). Not required to build or run the unit
+  tests.
+
+## Solution Layout
+
+The solution (`markmonitor-caplugin.sln`) contains three projects:
+
+| Project | Purpose |
+|---|---|
+| `markmonitor-caplugin/` | The plugin itself. Produces `MarkMonitorCAPlugin.dll` per TFM under `bin/Release/<tfm>/`. `manifest.json` is copied alongside the DLL on every build — it is how the AnyCA Gateway host discovers the plugin type (`Keyfactor.Extensions.CAPlugin.MarkMonitor.MarkMonitorCAPlugin`). |
+| `markmonitor-caplugin.Tests/` | xUnit unit-test project (mocked HTTP, no live API). Targets `net8.0`. |
+| `TestConsole/` | Manual live integration/smoke-test console app that drives `MarkMonitorClient` directly against a live or sandbox MarkMonitor API. Destructive by nature (creates real orders). |
+
+Key source files inside `markmonitor-caplugin/`:
+
+- **`MarkMonitorCAConnector.cs`** — `IAnyCAPlugin` implementation; the Gateway host entry point.
+- **`Client/MarkMonitorClient.cs`** — the MarkMonitor REST HTTP client (auth, pagination, CSR
+  handling, status mapping, dedup cache).
+- **`MarkMonitorCAPluginConfig.cs`** — CA-connection and enrollment-parameter schema, UI
+  annotations/defaults, and the canonical field-name constants (`ConfigConstants` /
+  `EnrollmentConfigConstants`).
+- **`Models/`** — request/response DTOs plus `Enums.cs` (`CertOrderTypes`, `OrderStatus`,
+  `DomainControlValidationMethods`, etc.). Enum-to-API-string mapping goes through the
+  `[Description]` attribute + `EnumExtensions.GetDescription()`.
+
+## Build
+
+```shell
+dotnet build markmonitor-caplugin.sln -c Release
+```
+
+This produces `MarkMonitorCAPlugin.dll` for each TFM under
+`markmonitor-caplugin/bin/Release/net8.0/` and `.../net10.0/`, each with `manifest.json` copied
+alongside.
+
+To deploy manually, copy the contents of the target framework's output directory into the Gateway's
+`Extensions` folder and restart the AnyCA Gateway REST service (see the [README.md](README.md)
+Installation section for the exact path).
+
+## Unit Tests
+
+The `markmonitor-caplugin.Tests/` project is an xUnit suite that exercises the connector and client
+against a fake `HttpMessageHandler` (see `TestHelpers/FakeHttpMessageHandler.cs`) and injected fakes
+(`FakeCertificateDataReader`, `FakeAnyCAPluginConfigProvider`, `ManualTimeProvider`) — no live API or
+credentials are required, so it is safe to run in CI.
+
+```shell
+dotnet test markmonitor-caplugin.sln -c Release
+```
+
+Coverage is collected via `coverlet.collector`. The suite covers, among other areas:
+
+- Connector operations — enroll, revoke, renew-or-reissue, connection-info validation, client
+  caching.
+- Client behavior — inventory/sync, pagination and query encoding, order-ID GUID validation, subject
+  (`CN`) cleaning, ECC named-curve validation, cancel, error propagation, and enroll logging/redaction.
+
+When you add or change behavior, add or update tests here — a fake handler that returns canned
+MarkMonitor JSON is the established pattern for new client tests.
+
+## Live Smoke-Testing (`TestConsole`)
+
+`TestConsole/Program.cs` runs a scripted sequence against a live (or sandbox) MarkMonitor API:
+authenticate, list organizations, list certificate orders, then generate RSA/ECC CSRs and submit real
+enrollment orders. It is a **manual smoke-test harness, not a repeatable CI test suite** — it creates
+real orders and is destructive/live by nature.
+
+It requires real credentials as environment variables:
+
+```
+MARKMONITOR_BASE_URL      # e.g. https://api.markmonitor.com (or your sandbox URL)
+MARKMONITOR_API_TOKEN     # the X-API-KEY value
+MARKMONITOR_USERNAME      # service-account username
+MARKMONITOR_PASSWORD      # service-account password
+```
+
+`TestConsole/.env` holds these locally and is gitignored. By default the console cancels/revokes the
+orders it creates so test runs don't accumulate charges; set `MARKMONITOR_SKIP_CLEANUP=true` to leave
+them in place.
+
+Run it with:
+
+```shell
+dotnet run --project TestConsole
+```
+
+> **Test-environment note:** in the MarkMonitor test setup, an enrolled order's common name must be
+> `<something>.mmcertdomain.com` or the request is rejected, and issuance requires manual email
+> approval — enrollments will sit pending until approved, then appear in Command on the next
+> incremental sync.
+
+## Adding a New MarkMonitor Product
+
+1. Add a member to `CertOrderTypes` in `Models/Enums.cs` with the matching `[Description("...")]`
+   (the MarkMonitor cert-type string).
+2. Add the same product-ID name to `product_ids` in `integration-manifest.json`.
+3. No separate list needs editing — `GetProductIds()` derives from the enum, and enrollment maps the
+   Command product ID to the MarkMonitor string via `GetDescription()`.
+
+## Keeping Metadata and Docs in Sync
+
+- `integration-manifest.json` (repo root) drives Keyfactor's integration catalog metadata
+  (`product_ids`, `ca_plugin_config`, `enrollment_config`) — keep it in sync with
+  `MarkMonitorCAPluginConfig.cs` and `CertOrderTypes` whenever either changes.
+- `docsource/configuration.md` and `docsource/overview.md` are the source-of-truth, customer-facing
+  documentation fragments. Root `README.md` is generated by the Keyfactor doctool
+  (`~/RiderProjects/doctooldotnet`) from `docsource/configuration.md` + `integration-manifest.json` —
+  never hand-edit `README.md`; edit `docsource/configuration.md` and regenerate. This `DEVELOPMENT.md`
+  file, like `LICENSE`, is hand-maintained at the repo root and is **not** part of the doctool
+  pipeline — edit it directly.
+- `docsource/CODEMAP.md` is the orientation map for this repo — update it whenever you change the
+  architecture, add/move key files, or change the build/test layout.
+
 ## Architecture
 
-This document describes how the MarkMonitor AnyCA Gateway REST plugin integrates with Keyfactor
+This section describes how the MarkMonitor AnyCA Gateway REST plugin integrates with Keyfactor
 Command and the MarkMonitor SSL certificate API. It covers the primary certificate lifecycle
 operations — synchronization, enrollment, and revocation — and how the plugin routes each through
 the MarkMonitor REST API.
 
-## Component Overview
+### Component Overview
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                  Keyfactor Command                       │
-│                                                          │
-│   Certificate Enrollment  ·  Revocation  ·  Sync Jobs    │
-└────────────────────────────┬─────────────────────────────┘
-                             │
-                    AnyCA Gateway REST
-                    (plugin host process)
-                             │
-┌────────────────────────────▼─────────────────────────────┐
-│            MarkMonitorCAPlugin : IAnyCAPlugin             │
-│                                                          │
-│   Translates Keyfactor operations into MarkMonitor API   │
-│   calls and maps responses back to Command's data model. │
-│   MarkMonitorClient owns HTTP, bearer-token auth,        │
-│   pagination, CSR handling, and status mapping.          │
-└────────────────────────────┬─────────────────────────────┘
-                             │  HTTPS · Bearer token + X-API-KEY
-                             │
-┌────────────────────────────▼─────────────────────────────┐
-│               MarkMonitor REST API (DigiCert)            │
-│                                                          │
-│   /auth/v1/auth/authenticate   /certs/v1/order           │
-│   /certs/v1/organization       /auth/v1/group            │
-└──────────────────────────────────────────────────────────┘
-```
-
-The two source files that matter most:
+See [README.md](README.md#component-overview) for the high-level component diagram. The two source
+files that matter most:
 
 * **`MarkMonitorCAConnector.cs`** — the `IAnyCAPlugin` entry point the Gateway host calls
   (`Initialize`, `Enroll`, `Revoke`, `Synchronize`, `GetSingleRecord`, `Ping`,
@@ -45,7 +141,7 @@ The two source files that matter most:
   bearer-token authentication, list pagination, CSR PEM/DER handling (via BouncyCastle), the
   enrollment dedup cache, and the MarkMonitor-order-status → Keyfactor-status mapping.
 
-## Request Authentication
+### Request Authentication
 
 MarkMonitor uses two credentials together. The API key is sent as the `X-API-KEY` header on the
 authentication request; the service-account username and password are POSTed to
@@ -65,7 +161,7 @@ Authorization: Bearer <token>   where token ← POST /auth/v1/auth/authenticate
                                               body:    { username, password }
 ```
 
-## Certificate Identifiers
+### Certificate Identifiers
 
 MarkMonitor identifies each order by a **GUID order ID**. That order ID is what the plugin stores in
 Keyfactor Command as the `CARequestID`, and it is the identifier used for every post-enrollment
@@ -80,7 +176,7 @@ already parses as a GUID is used directly.
 
 ---
 
-## Gateway Startup
+### Gateway Startup
 
 When the AnyCA Gateway process loads the connector, `Initialize` deserializes the CA connection data
 into the plugin's config object. The `MarkMonitorClient` itself is not built until the first
@@ -108,7 +204,7 @@ sequenceDiagram
 
 ---
 
-## Synchronization
+### Synchronization
 
 Keyfactor Command periodically synchronizes its certificate inventory with MarkMonitor. The plugin
 retrieves all orders for the account, page by page (looping until `MarkMonitorPage.TotalPages` is
@@ -154,7 +250,7 @@ records, so a reason is not populated on the imported record.)
 
 ---
 
-## Certificate Enrollment
+### Certificate Enrollment
 
 When a requester submits a certificate request through Keyfactor Command, the plugin translates it
 into a MarkMonitor order. It resolves the organization, contact, and (optional) group; validates and
@@ -188,7 +284,7 @@ sequenceDiagram
     end
 ```
 
-### Enrollment inputs resolved from template parameters
+#### Enrollment inputs resolved from template parameters
 
 The plugin reads these product/template parameters (case-insensitive) when building the order —
 falling back to defaults or a best-effort lookup when a value is missing or cannot be resolved:
@@ -204,9 +300,10 @@ falling back to defaults or a best-effort lookup when a value is missing or cann
 * **DCV method** (`DCVMethod`) — validated against `EMAIL`, `DNS_CNAME_TOKEN`, `HTTP_TOKEN`,
   `DNS_TXT_TOKEN`; an invalid value logs a warning and falls back to `EMAIL`.
 * **Additional emails** (`AdditionalEmails`), **comments** (`comments`), **locale** (`locale`),
-  **provider** (`provider`) — see [configuration.md](configuration.md#template-enrollment-parameters).
+  **provider** (`provider`) — see the Template Enrollment Parameters table in
+  [README.md](README.md).
 
-### Renewal / Reissue
+#### Renewal / Reissue
 
 MarkMonitor exposes reissue and cancel endpoints (`PATCH /certs/v1/order/{id}/reissue`,
 `PATCH /certs/v1/order/{id}/cancel`), but the enrollment path does **not** use them. A
@@ -233,7 +330,7 @@ flowchart TD
 
 ---
 
-## Revocation
+### Revocation
 
 When a certificate is revoked in Keyfactor Command, the plugin first ensures an `OrgId` is
 configured, then verifies the target order belongs to that organization before calling MarkMonitor's
@@ -270,7 +367,7 @@ cannot be forwarded. A non-default reason is logged rather than silently dropped
 
 ---
 
-## Connector Validation
+### Connector Validation
 
 When an administrator saves or edits the CA connector, `ValidateCAConnectionInfo` checks the supplied
 fields before the connector can be saved in an enabled state.
@@ -294,40 +391,21 @@ MarkMonitor's availability.
 
 ---
 
-## Order Status Mapping
+### Order Status Mapping
 
-`MarkMonitorClient.MarkMonitorCertificateStatusToCAStatus` maps MarkMonitor `OrderStatus` values to
-Keyfactor `EndEntityStatus`:
+See the [Order Status Mapping table](README.md#order-status-mapping) in README.md for the full
+MarkMonitor-status → Keyfactor-status table. The mapping is implemented in
+`MarkMonitorClient.MarkMonitorCertificateStatusToCAStatus`.
 
-| MarkMonitor order status | Keyfactor status |
-|---|---|
-| `DIGI_PENDING`, `DIGI_PROCESSING`, `DIGI_REISSUE_PENDING`, `DIGI_WAITING_PICKUP`, `REISSUE_PENDING`, `DIGI_NEEDS_APPROVAL`, `REISSUE_REQUEST_PENDING` | `INPROCESS` |
-| `CREATED` | `EXTERNALVALIDATION` (accepted, awaiting DCV/issuance) |
-| `DIGI_ISSUED` | `GENERATED` (issued) |
-| `DIGI_REVOKED` | `REVOKED` |
-| `DIGI_FAILED`, `DIGI_REISSUE_FAILED` | `FAILED` |
-| `DIGI_CANCELED`, `DIGI_REJECTED`, `DIGI_EXPIRED`, `DIGI_NEEDS_CSR` | `CANCELLED` |
-| *(null/empty or unrecognized status)* | `FAILED` |
+`CREATED` is deliberately mapped to `EXTERNALVALIDATION`, not `INITIALIZED`. The AnyCA Gateway REST
+framework treats `INITIALIZED` as a hard enrollment failure, which caused freshly-created orders
+(that were in fact accepted by MarkMonitor and simply awaiting DCV/issuance) to be reported as
+failures. `EXTERNALVALIDATION` is what the framework treats as "accepted, still pending".
 
-> `CREATED` is deliberately mapped to `EXTERNALVALIDATION`, not `INITIALIZED`. The AnyCA Gateway REST
-> framework treats `INITIALIZED` as a hard enrollment failure, which caused freshly-created orders
-> (that were in fact accepted by MarkMonitor and simply awaiting DCV/issuance) to be reported as
-> failures. `EXTERNALVALIDATION` is what the framework treats as "accepted, still pending".
+### API Endpoint Reference
 
-## API Endpoint Reference
-
-| Operation | MarkMonitor API endpoint |
-|---|---|
-| Authenticate / obtain bearer token | `POST /auth/v1/auth/authenticate` (with `X-API-KEY` header) |
-| List certificate orders (sync) | `GET /certs/v1/order` (paginated via `page`/`size`) |
-| Get a single order | `GET /certs/v1/order/{orderId}` |
-| Place a new order (enroll) | `POST /certs/v1/order` |
-| Revoke a certificate | `PATCH /certs/v1/order/{orderId}/revoke` |
-| Cancel an order | `PATCH /certs/v1/order/{orderId}/cancel` |
-| Reissue a certificate | `PATCH /certs/v1/order/{orderId}/reissue` |
-| List organizations | `GET /certs/v1/organization` (paginated) |
-| Get an organization | `GET /certs/v1/organization/{orgId}` |
-| List groups | `GET /auth/v1/group` (paginated) |
+See the [API Endpoint Reference table](README.md#api-endpoint-reference) in README.md for the full
+list of MarkMonitor endpoints the plugin calls.
 
 > The cancel and reissue endpoints exist in the client but are not currently invoked by the
 > `IAnyCAPlugin` operations (enrollment reissue is implemented as new-order-plus-revoke; see

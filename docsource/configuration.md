@@ -145,59 +145,195 @@ enum member with the matching `[Description]` — not editing a separate list.
 > account may actually order — and any per-product required fields — depend on your account's
 > entitlements. Confirm availability with your MarkMonitor administrator.
 
-## Mechanics
+## How It Works
 
-### Authentication
+This section describes, at a high level, how the plugin connects Keyfactor Command's certificate
+lifecycle operations to the MarkMonitor SSL certificate service.
 
-MarkMonitor authentication is a two-credential flow: the `ApiKey` is sent as the `X-API-KEY` header
-to `POST /auth/v1/auth/authenticate` along with the service-account username/password, which returns
-a bearer token used for all subsequent calls. The token is cached in memory (with a 30-second early-
-expiry safety buffer) and refreshed lazily under a lock. See
-[architecture.md](architecture.md#request-authentication).
+### Component Overview
 
-### Key Types and CSR Handling
-
-Enrollment is CSR-based. The plugin accepts the CSR as PEM or base64 DER, parses it with BouncyCastle,
-derives the request algorithm (RSA or ECC) from the CSR signature/public-key OID, and re-serializes
-it to normalized PEM before submitting. DSA is not supported.
-
-> **ECC CSRs must use a named curve** (e.g. P-256/`secp256r1`), not explicit curve parameters.
-> MarkMonitor silently fails an order whose ECC CSR uses explicit parameters, so the plugin rejects
-> such a CSR up front with an actionable error. See the
-> [troubleshooting note](overview.md#an-ecc-csr-is-rejected-at-enrollment-with-an-explicit-curve-parameters-error).
-
-### Enrollment Decision Logic
-
-`Enroll` always places a new MarkMonitor order (`POST /certs/v1/order`). For an
-`EnrollmentType.RenewOrReissue`, after the new order is created the plugin revokes the prior
-certificate, which the framework identifies via `PriorCertSN`. There is no in-place renewal or reissue
-call in the enrollment path — see [architecture.md](architecture.md#renewal--reissue).
-
-A short-lived, process-local dedup cache (keyed on organization + product + subject + CSR, 5-minute
-window) prevents a Command retry from creating a duplicate order.
-
-### Order Lifecycle and Pending Enrollment
-
-MarkMonitor SSL orders require DCV (and, in the test configuration, manual email approval) before
-DigiCert issues the certificate. A freshly-placed order returns MarkMonitor status `CREATED`, which
-the plugin maps to Keyfactor `EXTERNALVALIDATION` (accepted, still pending). Once the order reaches
-`DIGI_ISSUED`, the next CA sync transitions the Command record to `GENERATED` and imports the
-certificate. See the full [order status mapping](architecture.md#order-status-mapping).
+```
+┌─────────────────────────────────────────────────────────┐
+│                  Keyfactor Command                       │
+│                                                          │
+│   Certificate Enrollment  ·  Revocation  ·  Sync Jobs    │
+└────────────────────────────┬─────────────────────────────┘
+                             │
+                    AnyCA Gateway REST
+                    (plugin host process)
+                             │
+┌────────────────────────────▼─────────────────────────────┐
+│                   The MarkMonitor plugin                  │
+│                                                          │
+│   Translates Keyfactor operations into MarkMonitor API   │
+│   calls and maps responses back to Command's data model. │
+└────────────────────────────┬─────────────────────────────┘
+                             │  HTTPS · Bearer token + X-API-KEY
+                             │
+┌────────────────────────────▼─────────────────────────────┐
+│               MarkMonitor REST API (DigiCert)            │
+│                                                          │
+│   /auth/v1/auth/authenticate   /certs/v1/order           │
+│   /certs/v1/organization       /auth/v1/group            │
+└──────────────────────────────────────────────────────────┘
+```
 
 ### Synchronization
 
-Synchronization lists orders from `GET /certs/v1/order`, paging until `MarkMonitorPage.TotalPages` is
-reached (fixed page size of 100), maps each order's status, assembles the full certificate chain, and
-feeds issued certificates into Command's buffer. The current implementation always performs a full
-listing — it does not yet filter by `lastSync`/`fullSync` — and skips orders that have no certificate
-yet rather than aborting the page.
+Keyfactor Command periodically synchronizes its certificate inventory with MarkMonitor. The plugin
+retrieves all certificate orders visible to the configured organization, page by page, and imports
+issued certificates — along with their full certificate chain — into Command.
 
-### Revocation and Organization Scoping
+```mermaid
+sequenceDiagram
+    participant CMD as Keyfactor Command
+    participant Plugin as MarkMonitor plugin
+    participant API as MarkMonitor API
 
-`Revoke` refuses to run unless `OrgId` is configured. It resolves `OrgId` to a GUID, fetches the
-order, and revokes only if the order's owning organization matches (compared as parsed GUIDs). This
-adds a sub-organization ownership check on top of MarkMonitor's account-level `ignoreOrgCheck`.
-MarkMonitor's revoke schema has no reason-code field, so the Keyfactor revocation reason is logged
-but not forwarded. See [architecture.md](architecture.md#revocation).
+    CMD->>Plugin: Start synchronization
+    Plugin->>API: Authenticate with MarkMonitor
 
-{% include 'architecture.md' %}
+    loop Retrieve one page of orders at a time
+        Plugin->>API: List certificate orders
+        API-->>Plugin: Page of order records
+
+        loop For each order on the page
+            alt Order has no certificate yet
+                Plugin->>Plugin: Skip for this sync
+            else Order has a certificate
+                Plugin->>Plugin: Map the MarkMonitor status to a Keyfactor status
+                Plugin->>Plugin: Assemble the full certificate chain
+                Plugin->>CMD: Add certificate to Command's inventory
+            end
+        end
+    end
+
+    Plugin-->>CMD: Synchronization complete
+```
+
+> The current implementation always performs a full listing of orders on each sync, rather than only
+> retrieving certificates that changed since the last sync. Orders that have not yet produced a
+> certificate are simply skipped for that sync rather than treated as an error.
+
+### Certificate Enrollment (including Renewal / Reissue)
+
+When a requester submits a certificate request through Keyfactor Command, the plugin translates it
+into a MarkMonitor order: it resolves the organization, contact, and (optional) group; validates and
+normalizes the CSR; and submits the order. Because Domain Control Validation (and, in some
+environments, manual approval) is required before issuance, a newly submitted order is typically
+accepted in a pending state rather than coming back with an issued certificate right away.
+
+```mermaid
+sequenceDiagram
+    participant CMD as Keyfactor Command
+    participant Plugin as MarkMonitor plugin
+    participant API as MarkMonitor API
+
+    CMD->>Plugin: Submit certificate request
+    Plugin->>API: Authenticate with MarkMonitor
+    Plugin->>Plugin: Check for a duplicate in-flight request
+
+    alt An identical request was already submitted / just completed
+        Plugin-->>CMD: Return the original result (no duplicate order placed)
+    else New request
+        Plugin->>API: Resolve organization, contact, and group
+        Plugin->>Plugin: Validate and normalize the CSR
+        Plugin->>API: Submit the certificate order
+        API-->>Plugin: Order accepted — order ID and status
+
+        alt Renewal/Reissue request
+            Plugin->>API: Revoke the certificate being replaced
+        end
+
+        Plugin-->>CMD: Enrollment result (order ID, current status)
+    end
+```
+
+MarkMonitor has no in-place "renew" enrollment endpoint through this plugin, so a Renewal/Reissue
+request always places a brand-new order. Once the replacement certificate has been created
+successfully, the plugin revokes the certificate it is replacing. If the certificate being replaced
+can't be identified, the request is simply treated as a new issuance — a failure to revoke the old
+certificate never blocks delivery of the new one.
+
+### Revocation
+
+When a certificate is revoked in Keyfactor Command, the plugin confirms that the target order belongs
+to the organization the CA connector is configured for before calling MarkMonitor's revoke operation.
+
+```mermaid
+sequenceDiagram
+    participant CMD as Keyfactor Command
+    participant Plugin as MarkMonitor plugin
+    participant API as MarkMonitor API
+
+    CMD->>Plugin: Revoke certificate
+    Plugin->>API: Authenticate with MarkMonitor
+    Plugin->>API: Look up the order's owning organization
+
+    alt Order belongs to a different organization
+        Plugin-->>CMD: Error — refusing to revoke (different organization)
+    else Order belongs to the configured organization
+        Plugin->>API: Revoke the order
+        API-->>Plugin: Revocation confirmed
+        Plugin-->>CMD: Certificate marked revoked
+    end
+```
+
+> MarkMonitor's revoke operation has no field for a revocation reason code, so the reason supplied by
+> Keyfactor Command cannot be forwarded to MarkMonitor.
+
+### Connector Validation
+
+When an administrator saves or edits the CA connector, the plugin checks the supplied configuration
+before the connector can be saved in an enabled state.
+
+```mermaid
+flowchart TD
+    A([Save connector configuration]) --> B{"API Key, Username,<br/>Password all present?"}
+    B -- Missing --> E([Validation error shown to administrator])
+    B -- Present --> C{"Base URL starts with https://<br/>(or blank → default)?"}
+    C -- Not https --> E
+    C -- OK --> D{"Organization present?"}
+    D -- Missing --> E
+    D -- Present --> F([Connector saved])
+```
+
+This check validates the configuration fields themselves — it does not place a live call to
+MarkMonitor. Use the connector's connection test to confirm live connectivity; that test
+authenticates with MarkMonitor and confirms that at least one organization is visible.
+
+### Order Status Mapping
+
+MarkMonitor order statuses are mapped to Keyfactor statuses as follows:
+
+| MarkMonitor order status | Keyfactor status |
+|---|---|
+| `DIGI_PENDING`, `DIGI_PROCESSING`, `DIGI_REISSUE_PENDING`, `DIGI_WAITING_PICKUP`, `REISSUE_PENDING`, `DIGI_NEEDS_APPROVAL`, `REISSUE_REQUEST_PENDING` | `INPROCESS` |
+| `CREATED` | `EXTERNALVALIDATION` (accepted, awaiting DCV/issuance) |
+| `DIGI_ISSUED` | `GENERATED` (issued) |
+| `DIGI_REVOKED` | `REVOKED` |
+| `DIGI_FAILED`, `DIGI_REISSUE_FAILED` | `FAILED` |
+| `DIGI_CANCELED`, `DIGI_REJECTED`, `DIGI_EXPIRED`, `DIGI_NEEDS_CSR` | `CANCELLED` |
+| *(null/empty or unrecognized status)* | `FAILED` |
+
+> A freshly-submitted order (`CREATED`) is deliberately mapped to `EXTERNALVALIDATION` rather than a
+> failure status — this means the order was accepted by MarkMonitor and is simply awaiting DCV or
+> issuance. Once the order reaches `DIGI_ISSUED`, the next synchronization imports the certificate.
+
+### API Endpoint Reference
+
+The plugin calls the following MarkMonitor API endpoints. This is useful for firewall and network
+connectivity planning.
+
+| Operation | MarkMonitor API endpoint |
+|---|---|
+| Authenticate / obtain bearer token | `POST /auth/v1/auth/authenticate` (with `X-API-KEY` header) |
+| List certificate orders (sync) | `GET /certs/v1/order` (paginated via `page`/`size`) |
+| Get a single order | `GET /certs/v1/order/{orderId}` |
+| Place a new order (enroll) | `POST /certs/v1/order` |
+| Revoke a certificate | `PATCH /certs/v1/order/{orderId}/revoke` |
+| Cancel an order | `PATCH /certs/v1/order/{orderId}/cancel` |
+| Reissue a certificate | `PATCH /certs/v1/order/{orderId}/reissue` |
+| List organizations | `GET /certs/v1/organization` (paginated) |
+| Get an organization | `GET /certs/v1/organization/{orgId}` |
+| List groups | `GET /auth/v1/group` (paginated) |

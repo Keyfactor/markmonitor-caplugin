@@ -414,8 +414,11 @@ public class MarkMonitorClient : IDisposable
         }
         catch (Exception e)
         {
+            // Rethrow rather than swallow to null - a transient auth/network/parsing failure here
+            // must not be reported to the caller identically to "this organization doesn't exist"
+            // (same class of gap already fixed in GetSingleOrderAsync).
             _logger.LogError("An error has occurred: {EMessage}", e.Message);
-            return null;
+            throw;
         }
         finally
         {

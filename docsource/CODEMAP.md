@@ -7,7 +7,7 @@
 > CODEMAP in the same change** if the change adds/removes/moves a source file of note, alters the
 > architecture or a data flow, changes the build/test layout, or changes config/enrollment fields or
 > product IDs. Keep it terse and accurate; a stale codemap is worse than none. This file is committed
-> to the repo (unlike `CLAUDE.md`, which is local-only and must never be committed).
+> to the repo
 
 Last verified against the codebase: 2026-07-16.
 
@@ -84,7 +84,6 @@ pending set (`DIGI_PENDING`/`DIGI_PROCESSING`/`DIGI_REISSUE_PENDING`/`DIGI_WAITI
 - **Revocation reason** cannot be forwarded to MarkMonitor (no schema field).
 - **`ValidateProductInfo` is a no-op** — contact/group are resolved and defaulted at enroll time, not
   validated at template save.
-- **`CLAUDE.md` is never committed** (see repo memory); it is local-only project guidance.
 
 ## Build / test / deploy
 

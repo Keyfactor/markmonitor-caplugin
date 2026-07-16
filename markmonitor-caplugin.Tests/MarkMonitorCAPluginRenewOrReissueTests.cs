@@ -20,7 +20,7 @@ public class MarkMonitorCAPluginRenewOrReissueTests
     private static (MarkMonitorCAPlugin plugin, FakeHttpMessageHandler handler, FakeCertificateDataReader reader)
         BuildPlugin(FakeHttpMessageHandler handler)
     {
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         var plugin = new MarkMonitorCAPlugin(client);
         var reader = new FakeCertificateDataReader();
         plugin.Initialize(FakeAnyCAPluginConfigProvider.WithDefaults(), reader);

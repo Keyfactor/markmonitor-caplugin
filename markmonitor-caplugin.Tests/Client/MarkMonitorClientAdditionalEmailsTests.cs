@@ -20,13 +20,9 @@ public class MarkMonitorClientAdditionalEmailsTests
             .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
                     SampleOrders.OrderWithCert("11111111-1111-1111-1111-111111111111", "CREATED")));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
-        var config = new MarkMonitorConfig
-        {
-            BaseUrl = "https://api.markmonitor.test", ApiKey = "key", ApiUsername = "user", ApiPassword = "pass",
-            OrgName = "Test Org", Enabled = true
-        };
+        var config = SampleConfig.Default();
         var productParams = new Dictionary<string, string> { ["additionalEmails"] = "a@b.com, c@d.com" };
 
         await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",

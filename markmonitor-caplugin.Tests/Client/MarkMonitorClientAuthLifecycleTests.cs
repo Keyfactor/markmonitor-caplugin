@@ -21,7 +21,7 @@ public class MarkMonitorClientAuthLifecycleTests
             .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK,
                     SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
 
         var orgs = await client.ListOrganizationsAsync();
 
@@ -39,8 +39,7 @@ public class MarkMonitorClientAuthLifecycleTests
             .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK,
                     SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler,
-            clock);
+        var client = handler.BuildClient(clock);
 
         await client.AuthenticateAsync();
         Assert.Equal(1, AuthCallCount(handler));
@@ -62,8 +61,7 @@ public class MarkMonitorClientAuthLifecycleTests
             .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK,
                     SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler,
-            clock);
+        var client = handler.BuildClient(clock);
 
         await client.AuthenticateAsync();
         clock.UtcNow = clock.UtcNow.AddSeconds(5);
@@ -87,8 +85,7 @@ public class MarkMonitorClientAuthLifecycleTests
             .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK,
                     SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler,
-            clock);
+        var client = handler.BuildClient(clock);
 
         var firstCall = client.ListOrganizationsAsync();
         var secondCall = client.ListOrganizationsAsync();

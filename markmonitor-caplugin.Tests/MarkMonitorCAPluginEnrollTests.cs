@@ -18,8 +18,7 @@ public class MarkMonitorCAPluginEnrollTests
             .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.BadRequest,
                     """{"validations":[{"field":"cert.csr","code":"field.invalidFormat","message":"The CSR format is invalid."}]}"""));
-        var injectedClient =
-            new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var injectedClient = handler.BuildClient();
         var plugin = new MarkMonitorCAPlugin(injectedClient);
         plugin.Initialize(FakeAnyCAPluginConfigProvider.WithDefaults(), new FakeCertificateDataReader());
 

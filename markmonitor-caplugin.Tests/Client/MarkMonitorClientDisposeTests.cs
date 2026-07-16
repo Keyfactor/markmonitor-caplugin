@@ -9,7 +9,7 @@ public class MarkMonitorClientDisposeTests
     public async Task Dispose_DisposesTheUnderlyingHttpClient()
     {
         var handler = new FakeHttpMessageHandler().WithSuccessfulAuth();
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
 
         client.Dispose();
 

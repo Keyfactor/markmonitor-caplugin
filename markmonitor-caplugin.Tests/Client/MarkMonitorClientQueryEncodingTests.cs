@@ -18,7 +18,7 @@ public class MarkMonitorClientQueryEncodingTests
             .When(req => FakeHttpMessageHandler.Is(req, "GET", "/auth/v1/group"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK,
                     """{"groups":[],"page":{"size":0,"totalElements":0,"totalPages":0,"number":0}}"""));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         await client.ListGroupsAsync(0, 0, groupName);
@@ -37,7 +37,7 @@ public class MarkMonitorClientQueryEncodingTests
             .WithSuccessfulAuth()
             .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK, SampleOrgs.OrgsListResponse("")));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         await client.ListOrganizationsAsync(0, 1, orgName);

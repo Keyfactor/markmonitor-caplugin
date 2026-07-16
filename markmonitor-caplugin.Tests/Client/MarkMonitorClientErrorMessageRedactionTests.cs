@@ -17,7 +17,7 @@ public class MarkMonitorClientErrorMessageRedactionTests
             .WithSuccessfulAuth()
             .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.InternalServerError, unrecognizedBody));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         var ex = await Assert.ThrowsAsync<Exception>(() => client.ListOrganizationsAsync());

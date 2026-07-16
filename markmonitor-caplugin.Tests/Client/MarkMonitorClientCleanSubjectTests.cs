@@ -17,13 +17,9 @@ public class MarkMonitorClientCleanSubjectTests
             .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
                     SampleOrders.OrderWithCert("11111111-1111-1111-1111-111111111111", "CREATED")));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
-        var config = new MarkMonitorConfig
-        {
-            BaseUrl = "https://api.markmonitor.test", ApiKey = "key", ApiUsername = "user", ApiPassword = "pass",
-            OrgName = "Test Org", Enabled = true
-        };
+        var config = SampleConfig.Default();
 
         await client.EnrollCertificateAsync(SampleCsr.Pem, subject, new Dictionary<string, string[]>(),
             "SslDvGeotrust", new Dictionary<string, string>(), config);

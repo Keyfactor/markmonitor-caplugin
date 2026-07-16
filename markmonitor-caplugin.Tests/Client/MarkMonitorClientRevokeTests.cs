@@ -26,7 +26,7 @@ public class MarkMonitorClientRevokeTests
                     SampleOrders.OrderWithCert("11111111-1111-1111-1111-111111111111", "DIGI_ISSUED")))
             .When(req => FakeHttpMessageHandler.Is(req, "PATCH", "/certs/v1/order/11111111-1111-1111-1111-111111111111/revoke"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK, "{}"));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         var result = await client.RevokeCertificateAsync("11111111-1111-1111-1111-111111111111", "Test Org", reason);
@@ -52,7 +52,7 @@ public class MarkMonitorClientRevokeTests
                         organizationId: "99999999-9999-9999-9999-999999999999")))
             .When(req => FakeHttpMessageHandler.Is(req, "PATCH", $"/certs/v1/order/{orderId}/revoke"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK, "{}"));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         await Assert.ThrowsAsync<Exception>(() => client.RevokeCertificateAsync(orderId, "Test Org"));
@@ -71,7 +71,7 @@ public class MarkMonitorClientRevokeTests
                     SampleOrders.OrderWithCert(orderId, "DIGI_ISSUED", organizationId: SampleOrgs.DefaultOrgId)))
             .When(req => FakeHttpMessageHandler.Is(req, "PATCH", $"/certs/v1/order/{orderId}/revoke"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK, "{}"));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         var result = await client.RevokeCertificateAsync(orderId, SampleOrgs.DefaultOrgId);

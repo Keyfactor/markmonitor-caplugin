@@ -11,7 +11,7 @@ public class MarkMonitorClientOrderIdValidationTests
     public async Task GetSingleOrderAsync_WithNonGuidOrderId_ThrowsWithoutMakingARequest()
     {
         var handler = new FakeHttpMessageHandler().WithSuccessfulAuth();
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         await Assert.ThrowsAsync<ArgumentException>(() => client.GetSingleOrderAsync(NotAGuid));
@@ -23,7 +23,7 @@ public class MarkMonitorClientOrderIdValidationTests
     public async Task CancelCertificateAsync_WithNonGuidOrderId_ThrowsWithoutMakingARequest()
     {
         var handler = new FakeHttpMessageHandler().WithSuccessfulAuth();
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         await Assert.ThrowsAsync<ArgumentException>(() => client.CancelCertificateAsync(NotAGuid));
@@ -35,7 +35,7 @@ public class MarkMonitorClientOrderIdValidationTests
     public async Task RevokeCertificateAsync_WithNonGuidOrderId_ThrowsWithoutMakingARequest()
     {
         var handler = new FakeHttpMessageHandler().WithSuccessfulAuth();
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         await Assert.ThrowsAsync<ArgumentException>(() => client.RevokeCertificateAsync(NotAGuid));
@@ -49,7 +49,7 @@ public class MarkMonitorClientOrderIdValidationTests
         // GetOrganizationAsync's URL interpolates orgId directly (/certs/v1/organization/{orgId}),
         // same class of injection risk ValidateGuidFormat already guards against for order IDs.
         var handler = new FakeHttpMessageHandler().WithSuccessfulAuth();
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         var result = await client.GetOrganizationAsync(NotAGuid);

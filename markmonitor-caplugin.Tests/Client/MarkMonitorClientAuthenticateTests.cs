@@ -10,7 +10,7 @@ public class MarkMonitorClientAuthenticateTests
     public async Task AuthenticateAsync_WithFakeSuccessResponse_Succeeds()
     {
         var handler = new FakeHttpMessageHandler().WithSuccessfulAuth();
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
 
         await client.AuthenticateAsync();
 
@@ -30,7 +30,7 @@ public class MarkMonitorClientAuthenticateTests
             .When(req => FakeHttpMessageHandler.Is(req, "POST", "/auth/v1/auth/authenticate"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.Unauthorized,
                     """{"errors":[{"code":"auth.invalidCredentials","message":"Invalid username or password."}]}"""));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
 
         var ex = await Assert.ThrowsAsync<Exception>(() => client.AuthenticateAsync());
 
@@ -46,7 +46,7 @@ public class MarkMonitorClientAuthenticateTests
         // EnsureAuthenticatedAsync re-authenticates on token expiry) used to leave two X-API-KEY
         // values on every subsequent request.
         var handler = new FakeHttpMessageHandler().WithSuccessfulAuth();
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
 
         await client.AuthenticateAsync();
         await client.AuthenticateAsync();

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http;
 using System.Text;
+using Keyfactor.Extensions.CAPlugin.MarkMonitor.Client;
 
 namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.TestHelpers;
 
@@ -79,4 +80,9 @@ public sealed class FakeHttpMessageHandler : HttpMessageHandler
         return When(req => Is(req, "POST", "/auth/v1/auth/authenticate"),
             Json(HttpStatusCode.OK, $"{{\"token\":\"{token}\",\"expiresIn\":{expiresIn}}}"));
     }
+
+    /// <summary>Builds a MarkMonitorClient wired to this fake handler, using the same
+    /// base URL/credentials every test uses since they're never actually sent anywhere real.</summary>
+    public MarkMonitorClient BuildClient(TimeProvider? timeProvider = null) =>
+        new("https://api.markmonitor.test", "key", "user", "pass", true, this, timeProvider);
 }

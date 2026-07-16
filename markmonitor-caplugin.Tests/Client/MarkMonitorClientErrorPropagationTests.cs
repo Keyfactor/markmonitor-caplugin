@@ -16,7 +16,7 @@ public class MarkMonitorClientErrorPropagationTests
             .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.InternalServerError,
                     """{"errors":[{"code":"request.genericError","message":"An unexpected error occurred."}]}"""));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         var ex = await Assert.ThrowsAsync<Exception>(() => client.ListOrganizationsAsync());
@@ -32,7 +32,7 @@ public class MarkMonitorClientErrorPropagationTests
             .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.InternalServerError,
                     """{"errors":[{"code":"request.genericError","message":"An unexpected error occurred."}]}"""));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         var ex = await Assert.ThrowsAsync<Exception>(() => client.ListCertificateOrdersAsync(0, "", "", 100));
@@ -51,7 +51,7 @@ public class MarkMonitorClientErrorPropagationTests
             .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.InternalServerError,
                     """{"errors":[{"code":"request.genericError","message":"An unexpected error occurred."}]}"""));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
         var buffer = new BlockingCollection<AnyCAPluginCertificate>();
 
@@ -74,7 +74,7 @@ public class MarkMonitorClientErrorPropagationTests
             .When(req => FakeHttpMessageHandler.Is(req, "GET", "/auth/v1/group"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.InternalServerError,
                     """{"errors":[{"code":"request.genericError","message":"An unexpected error occurred."}]}"""));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         var result = await client.ListGroupsAsync(0, 0, "Engineering");

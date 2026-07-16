@@ -27,7 +27,7 @@ public class MarkMonitorClientEnrollTests
             .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.BadRequest,
                     """{"validations":[{"field":"cert.csr","code":"field.invalidFormat","message":"The CSR format is invalid."}]}"""));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         var ex = await Assert.ThrowsAsync<Exception>(() =>
@@ -52,7 +52,7 @@ public class MarkMonitorClientEnrollTests
             .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
                     SampleOrders.OrderWithCert("33333333-3333-3333-3333-333333333333", "CREATED")));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
         var config = Config();
         config.OrgName = SampleOrgs.DefaultOrgId;
@@ -76,7 +76,7 @@ public class MarkMonitorClientEnrollTests
             .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
                     SampleOrders.OrderWithCert("44444444-4444-4444-4444-444444444444", "CREATED")));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         var result = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",

@@ -15,7 +15,7 @@ public class MarkMonitorClientGetSingleOrderTests
             .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order/55555555-5555-5555-5555-555555555555"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK,
                     SampleOrders.OrderWithCert("55555555-5555-5555-5555-555555555555", "DIGI_ISSUED")));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         var result = await client.GetSingleOrderAsync("55555555-5555-5555-5555-555555555555");
@@ -34,7 +34,7 @@ public class MarkMonitorClientGetSingleOrderTests
             .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order/66666666-6666-6666-6666-666666666666"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK,
                     SampleOrders.OrderWithCert("66666666-6666-6666-6666-666666666666", "DIGI_REVOKED", "REVOKED", "2026-03-01T00:00:00Z")));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         var result = await client.GetSingleOrderAsync("66666666-6666-6666-6666-666666666666");
@@ -56,7 +56,7 @@ public class MarkMonitorClientGetSingleOrderTests
             .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order/77777777-7777-7777-7777-777777777777"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.InternalServerError,
                     """{"errors":[{"code":"request.genericError","message":"An unexpected error occurred."}]}"""));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         var ex = await Assert.ThrowsAsync<Exception>(
@@ -75,7 +75,7 @@ public class MarkMonitorClientGetSingleOrderTests
             .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order/88888888-8888-8888-8888-888888888888"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK,
                     SampleOrders.OrderWithNullCert("88888888-8888-8888-8888-888888888888", "CREATED")));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         var result = await client.GetSingleOrderAsync("88888888-8888-8888-8888-888888888888");

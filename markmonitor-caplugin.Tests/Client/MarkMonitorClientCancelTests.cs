@@ -17,7 +17,7 @@ public class MarkMonitorClientCancelTests
             .WithSuccessfulAuth()
             .When(req => FakeHttpMessageHandler.Is(req, "PATCH", "/certs/v1/order/11111111-1111-1111-1111-111111111111/cancel"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK, "{}"));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         var result = await client.CancelCertificateAsync("11111111-1111-1111-1111-111111111111");
@@ -36,7 +36,7 @@ public class MarkMonitorClientCancelTests
             .WithSuccessfulAuth()
             .When(req => FakeHttpMessageHandler.Is(req, "PATCH", "/certs/v1/order/11111111-1111-1111-1111-111111111111/revoke"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK, "{}"));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         var result = await client.RevokeCertificateAsync("11111111-1111-1111-1111-111111111111");

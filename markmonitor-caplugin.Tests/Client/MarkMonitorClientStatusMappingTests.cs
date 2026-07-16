@@ -14,7 +14,7 @@ public class MarkMonitorClientStatusMappingTests
             .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order/11111111-1111-1111-1111-111111111111"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK,
                     SampleOrders.OrderWithCert("11111111-1111-1111-1111-111111111111", markMonitorStatus)));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         var result = await client.GetSingleOrderAsync("11111111-1111-1111-1111-111111111111");

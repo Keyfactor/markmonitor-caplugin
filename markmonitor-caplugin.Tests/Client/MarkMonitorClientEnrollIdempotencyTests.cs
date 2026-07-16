@@ -6,15 +6,7 @@ namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.Client;
 
 public class MarkMonitorClientEnrollIdempotencyTests
 {
-    private static MarkMonitorConfig Config() => new()
-    {
-        BaseUrl = "https://api.markmonitor.test",
-        ApiKey = "key",
-        ApiUsername = "user",
-        ApiPassword = "pass",
-        OrgName = "Test Org",
-        Enabled = true
-    };
+    private static MarkMonitorConfig Config() => SampleConfig.Default();
 
     private static int OrderCreationCount(FakeHttpMessageHandler handler) =>
         handler.Requests.Count(r => FakeHttpMessageHandler.Is(r, "POST", "/certs/v1/order"));
@@ -34,7 +26,7 @@ public class MarkMonitorClientEnrollIdempotencyTests
         // Simulates Command retrying an Enroll call whose first attempt actually succeeded server-
         // side but whose response was lost (timeout, dropped connection).
         var handler = BuildHandler();
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         var first = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
@@ -50,7 +42,7 @@ public class MarkMonitorClientEnrollIdempotencyTests
     public async Task EnrollCertificateAsync_CalledTwiceWithDifferentCsrs_CreatesTwoOrders()
     {
         var handler = BuildHandler();
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
@@ -66,8 +58,7 @@ public class MarkMonitorClientEnrollIdempotencyTests
     {
         var clock = new ManualTimeProvider { UtcNow = DateTimeOffset.UtcNow };
         var handler = BuildHandler();
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler,
-            clock);
+        var client = handler.BuildClient(clock);
         await client.AuthenticateAsync();
 
         await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
@@ -97,7 +88,7 @@ public class MarkMonitorClientEnrollIdempotencyTests
             .WhenGated(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"), orderResponseGate.Task,
                 FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
                     SampleOrders.OrderWithCert("11111111-1111-1111-1111-111111111111", "CREATED")));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         var firstCall = client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
@@ -130,7 +121,7 @@ public class MarkMonitorClientEnrollIdempotencyTests
                     """{"errors":[{"code":"request.genericError","message":"An unexpected error occurred."}]}"""),
                 FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
                     SampleOrders.OrderWithCert("11111111-1111-1111-1111-111111111111", "CREATED")));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
 
         await Assert.ThrowsAsync<Exception>(() => client.EnrollCertificateAsync(SampleCsr.Pem,

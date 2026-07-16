@@ -25,7 +25,7 @@ public class MarkMonitorClientInventoryTests
             .WithSuccessfulAuth()
             .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order"),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK, SampleOrders.OrdersPage(ordersJson)));
-        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "pass", true, handler);
+        var client = handler.BuildClient();
         await client.AuthenticateAsync();
         var buffer = new BlockingCollection<AnyCAPluginCertificate>();
 

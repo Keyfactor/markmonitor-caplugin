@@ -373,3 +373,5 @@ FodyWeavers.xsd
 TestConsole/Scripts/
 TestConsole/lib/list_real.json
 TestConsole/lib/request.json
+# Claude Code local settings (never commit)
+.claude/

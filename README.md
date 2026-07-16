@@ -411,7 +411,7 @@ sequenceDiagram
     else New request
         Plugin->>Plugin: Reserve dedup key BEFORE any real work
         Plugin->>API: Resolve organization (name→GUID) & contact & group
-        Plugin->>Plugin: Parse CSR; reject ECC explicit-curve params;<br/>derive RSA/ECC; convert to PEM
+        Plugin->>Plugin: Parse CSR, reject ECC explicit-curve params,<br/>derive RSA/ECC, convert to PEM
         Plugin->>API: POST /certs/v1/order (product, org, contact, DCV method, CSR)
         API-->>Plugin: Order created — GUID order ID + status
 
@@ -461,7 +461,7 @@ flowchart TD
     E --> F{"Resolved and<br/>OrgId configured?"}
     F -- No --> G([Log warning — prior cert not revoked])
     F -- Yes --> H["Revoke prior order<br/>(with org-ownership check)"]
-    H --> I([New cert delivered; prior revoked])
+    H --> I([New cert delivered, prior revoked])
     D --> I
     G --> I
 ```

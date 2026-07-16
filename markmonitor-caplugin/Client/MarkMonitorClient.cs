@@ -605,31 +605,8 @@ public class MarkMonitorClient : IDisposable
                     .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
             }
 
-            MarkMonitorOrganizationResponse org;
-            if (Guid.TryParse(config.OrgName, out _))
-            {
-                _logger.LogDebug("OrgId '{OrgName}' looks like a GUID - fetching the organization directly",
-                    config.OrgName);
-                org = await GetOrganizationAsync(config.OrgName);
-            }
-            else
-            {
-                var orgs = await ListOrganizationsAsync(0, 1, config.OrgName);
-                _logger.LogTrace("Organizations found: {@Orgs}", orgs);
-                // ListOrganizationsAsync throws rather than returning null on error, so orgs is
-                // never null here - just possibly empty.
-                org = orgs.FirstOrDefault();
-            }
-
-            var orgId = org?.Id;
-            _logger.LogTrace("Organization ID: {OrgId}", orgId);
-            if (string.IsNullOrEmpty(orgId))
-            {
-                _logger.LogError("Organization ID not found for {OrgName}", config.OrgName);
-                throw new InvalidDataException($"Organization ID '{config.OrgName}' not found");
-            }
-
-            var orgIdGuid = Guid.Parse(orgId);
+            var org = await ResolveOrganizationAsync(config.OrgName);
+            var orgIdGuid = Guid.Parse(org.Id);
 
             var comments = caseInsensitiveParams.GetValueOrDefault(
                 MarkMonitorCAPluginConfig.EnrollmentConfigConstants.Comments, "Requested via Keyfactor Command");
@@ -659,46 +636,14 @@ public class MarkMonitorClient : IDisposable
                 _logger.LogTrace("Resolved MarkMonitor contact: {ContactId} ({Email})", resolvedContact.Id,
                     resolvedContact.Email);
 
-            // Unlike contacts (scoped to org?.Contacts), group resolution can't be scoped to the
-            // configured organization: MarkMonitor's Auth API models groups as account/tenant-wide -
-            // /auth/v1/group has no organizationId filter, and the Group schema it returns
-            // (id/name/description/dateCreated/dateUpdated) has no organizationId field to check
-            // against either. There is nothing in this API to scope against, so a group name/GUID
-            // that resolves at all is accepted as-is; matching is by exact (case-insensitive) name
-            // rather than a substring, which is the closest available mitigation.
             _logger.LogDebug("Resolving MarkMonitor group for order");
             var groupParam = caseInsensitiveParams.GetValueOrDefault(
                 MarkMonitorCAPluginConfig.EnrollmentConfigConstants.MarkmonitorGroup);
-            Guid? groupIdGuid = null;
-            if (!string.IsNullOrWhiteSpace(groupParam))
-            {
-                if (Guid.TryParse(groupParam, out var parsedGroupId))
-                {
-                    groupIdGuid = parsedGroupId;
-                }
-                else
-                {
-                    var groups = await ListGroupsAsync(0, 0, groupParam);
-                    var matchedGroup = groups?.FirstOrDefault(g =>
-                        string.Equals(g.Name, groupParam, StringComparison.OrdinalIgnoreCase));
-                    if (matchedGroup != null)
-                        groupIdGuid = Guid.Parse(matchedGroup.Id);
-                    else
-                        _logger.LogWarning("MarkMonitor group '{GroupParam}' could not be resolved to an ID",
-                            groupParam);
-                }
-            }
+            var groupIdGuid = await ResolveGroupIdAsync(groupParam);
 
-            var validDcvMethods = Enum.GetValues<DomainControlValidationMethods>()
-                .Select(m => m.GetDescription()).ToList();
-            var dcvMethod = caseInsensitiveParams.GetValueOrDefault(
+            var dcvMethod = ValidateDcvMethod(caseInsensitiveParams.GetValueOrDefault(
                 MarkMonitorCAPluginConfig.EnrollmentConfigConstants.DCVMethod,
-                DomainControlValidationMethods.Email.GetDescription());
-            if (!validDcvMethods.Contains(dcvMethod, StringComparer.OrdinalIgnoreCase))
-            {
-                _logger.LogWarning("Invalid DCVMethod '{DcvMethod}' specified, defaulting to EMAIL", dcvMethod);
-                dcvMethod = DomainControlValidationMethods.Email.GetDescription();
-            }
+                DomainControlValidationMethods.Email.GetDescription()));
 
             // Lookup order type in CertOrderTypes enum
             _logger.LogDebug("Looking up order type {OrderType} in CertOrderTypes enum", orderType);
@@ -780,6 +725,66 @@ public class MarkMonitorClient : IDisposable
         {
             _logger.MethodExit();
         }
+    }
+
+    private async Task<MarkMonitorOrganizationResponse> ResolveOrganizationAsync(string orgNameOrId)
+    {
+        MarkMonitorOrganizationResponse org;
+        if (Guid.TryParse(orgNameOrId, out _))
+        {
+            _logger.LogDebug("OrgId '{OrgName}' looks like a GUID - fetching the organization directly",
+                orgNameOrId);
+            org = await GetOrganizationAsync(orgNameOrId);
+        }
+        else
+        {
+            var orgs = await ListOrganizationsAsync(0, 1, orgNameOrId);
+            _logger.LogTrace("Organizations found: {@Orgs}", orgs);
+            // ListOrganizationsAsync throws rather than returning null on error, so orgs is never
+            // null here - just possibly empty.
+            org = orgs.FirstOrDefault();
+        }
+
+        _logger.LogTrace("Organization ID: {OrgId}", org?.Id);
+        if (string.IsNullOrEmpty(org?.Id))
+        {
+            _logger.LogError("Organization ID not found for {OrgName}", orgNameOrId);
+            throw new InvalidDataException($"Organization ID '{orgNameOrId}' not found");
+        }
+
+        return org;
+    }
+
+    // Unlike contacts (scoped to an organization's own Contacts list), group resolution can't be
+    // scoped to the configured organization: MarkMonitor's Auth API models groups as
+    // account/tenant-wide - /auth/v1/group has no organizationId filter, and the Group schema it
+    // returns (id/name/description/dateCreated/dateUpdated) has no organizationId field to check
+    // against either. There is nothing in this API to scope against, so a group name/GUID that
+    // resolves at all is accepted as-is; matching is by exact (case-insensitive) name rather than a
+    // substring, which is the closest available mitigation.
+    private async Task<Guid?> ResolveGroupIdAsync(string groupParam)
+    {
+        if (string.IsNullOrWhiteSpace(groupParam)) return null;
+
+        if (Guid.TryParse(groupParam, out var parsedGroupId)) return parsedGroupId;
+
+        var groups = await ListGroupsAsync(0, 0, groupParam);
+        var matchedGroup = groups?.FirstOrDefault(g =>
+            string.Equals(g.Name, groupParam, StringComparison.OrdinalIgnoreCase));
+        if (matchedGroup != null) return Guid.Parse(matchedGroup.Id);
+
+        _logger.LogWarning("MarkMonitor group '{GroupParam}' could not be resolved to an ID", groupParam);
+        return null;
+    }
+
+    private string ValidateDcvMethod(string dcvMethod)
+    {
+        var validDcvMethods = Enum.GetValues<DomainControlValidationMethods>()
+            .Select(m => m.GetDescription()).ToList();
+        if (validDcvMethods.Contains(dcvMethod, StringComparer.OrdinalIgnoreCase)) return dcvMethod;
+
+        _logger.LogWarning("Invalid DCVMethod '{DcvMethod}' specified, defaulting to EMAIL", dcvMethod);
+        return DomainControlValidationMethods.Email.GetDescription();
     }
 
     private MarkMonitorGetContactResponse ResolveContact(List<MarkMonitorGetContactResponse> contacts,

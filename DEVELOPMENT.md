@@ -13,12 +13,13 @@ for end users, see [README.md](README.md).
 
 ## Solution Layout
 
-The solution (`markmonitor-caplugin.sln`) contains three projects:
+The solution (`markmonitor-caplugin.sln`) contains four projects:
 
 | Project | Purpose |
 |---|---|
 | `markmonitor-caplugin/` | The plugin itself. Produces `MarkMonitorCAPlugin.dll` per TFM under `bin/Release/<tfm>/`. `manifest.json` is copied alongside the DLL on every build — it is how the AnyCA Gateway host discovers the plugin type (`Keyfactor.Extensions.CAPlugin.MarkMonitor.MarkMonitorCAPlugin`). |
 | `markmonitor-caplugin.Tests/` | xUnit unit-test project (mocked HTTP, no live API). Targets `net8.0`. |
+| `markmonitor-caplugin.IntegrationTests/` | xUnit live-API test project — real `MarkMonitorClient` calls against the actual MarkMonitor API (authenticate, list orgs, list certificate orders, RSA/ECC enroll). Targets `net8.0`. Each test skips (no-op pass) when the `MARKMONITOR_*` env vars aren't set, so it's always safe to run; when creds are present it creates and cleans up real orders. See [Live Integration Tests](#live-integration-tests-markmonitor-caplugin-integrationtests) below. |
 | `TestConsole/` | Manual live integration/smoke-test console app that drives `MarkMonitorClient` directly against a live or sandbox MarkMonitor API. Destructive by nature (creates real orders). |
 
 Key source files inside `markmonitor-caplugin/`:
@@ -67,6 +68,49 @@ Coverage is collected via `coverlet.collector`. The suite covers, among other ar
 
 When you add or change behavior, add or update tests here — a fake handler that returns canned
 MarkMonitor JSON is the established pattern for new client tests.
+
+## Live Integration Tests (`markmonitor-caplugin.IntegrationTests`)
+
+The `markmonitor-caplugin.IntegrationTests/` project is an xUnit suite that hits the **real**
+MarkMonitor API, covering the same scenarios `TestConsole/Program.cs` walks through by hand:
+authenticate, list organizations, list certificate orders, and enroll (once with an RSA CSR, once
+with an ECC CSR, both generated via `TestConsole.Helpers.CsrGenerator`/`EmailAddressGenerator` —
+this project references `TestConsole/TestConsole.csproj` purely to reuse those two helpers, not to
+run `TestConsole` itself).
+
+Every test reads the same four `MARKMONITOR_*` environment variables `TestConsole` uses and returns
+immediately (a silent pass, not a skip/failure) if any are unset:
+
+```
+MARKMONITOR_BASE_URL
+MARKMONITOR_API_TOKEN
+MARKMONITOR_USERNAME
+MARKMONITOR_PASSWORD
+```
+
+This makes the project safe to run unconditionally — in CI or on a laptop with no `.env` sourced —
+without ever failing for lack of credentials. It is **not** wired into `.github/workflows/unit-tests.yml`
+(that workflow runs `markmonitor-caplugin.Tests/markmonitor-caplugin.Tests.csproj` directly, not the
+whole solution).
+
+To run locally:
+
+```shell
+set -a && source .env && set +a   # or TestConsole/.env
+dotnet test markmonitor-caplugin.IntegrationTests -c Release
+```
+
+`.github/workflows/integration-tests.yml` runs the same command in CI, but only on a manual
+`workflow_dispatch` — never on push or pull_request. The job also targets the `markmonitor-integration`
+GitHub environment, which holds the four `MARKMONITOR_*` secrets and requires reviewer approval before
+a dispatched run can access them — a second gate on top of the manual trigger, since a run creates
+real (sandbox) orders.
+
+Unlike `TestConsole`, the enrollment tests have **no `MARKMONITOR_SKIP_CLEANUP` escape hatch** — each
+one always cancels (falling back to revoke) the order it creates before returning, win or lose,
+since this is a repeatable automated suite rather than a manual inspection tool. A cleanup failure
+throws (failing the test loudly) instead of just logging a warning, so a billable order that
+couldn't be cleaned up is never left behind silently.
 
 ## Live Smoke-Testing (`TestConsole`)
 

@@ -10,6 +10,7 @@ using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Org.BouncyCastle.Asn1.X509;
+using Org.BouncyCastle.Asn1.X9;
 using Org.BouncyCastle.Pkcs;
 using Org.BouncyCastle.Tls;
 
@@ -554,6 +555,27 @@ public class MarkMonitorClient : IDisposable
         return requestAlgorithm;
     }
 
+    private const string EcPublicKeyOid = "1.2.840.10045.2.1";
+
+    /// <summary>
+    /// MarkMonitor's DigiCert-backed products silently reject an ECC CSR whose public key uses
+    /// explicit curve parameters (the curve's prime/coefficients/base point spelled out) instead of
+    /// a named-curve OID reference - the order fails almost instantly with no reason surfaced
+    /// anywhere in MarkMonitor's API (confirmed by decoding a real rejected order's CSR). CA/Browser
+    /// Forum baseline requirements disallow explicit parameters for publicly-trusted certs, so this
+    /// fails fast with an actionable message here rather than silently forwarding an order that
+    /// MarkMonitor will just as silently fail.
+    /// </summary>
+    private static void ValidateEccCsrUsesNamedCurve(SubjectPublicKeyInfo publicKeyInfo)
+    {
+        if (publicKeyInfo.Algorithm.Algorithm.Id != EcPublicKeyOid) return;
+
+        var ecParameters = X962Parameters.GetInstance(publicKeyInfo.Algorithm.Parameters);
+        if (!ecParameters.IsNamedCurve)
+            throw new ArgumentException(
+                "ECC CSR uses explicit curve parameters instead of a named curve (e.g. P-256/secp256r1) - MarkMonitor requires a named curve and will silently fail the order otherwise");
+    }
+
     // A reservation is "still active" - and must keep being awaited rather than replaced - if either
     // its nominal window hasn't elapsed yet, or its own call simply hasn't finished yet. The latter
     // matters when a call's real work (org/group lookups, CSR parsing, the order-create HTTP call
@@ -671,6 +693,7 @@ public class MarkMonitorClient : IDisposable
             _logger.LogDebug("Deserializing CSR");
             var csrObject = new Pkcs10CertificationRequest(GetCsrBytes(csr));
             var csrInfo = csrObject.GetCertificationRequestInfo();
+            ValidateEccCsrUsesNamedCurve(csrInfo.SubjectPublicKeyInfo);
 
             _logger.LogDebug("Determining CSR algorithm");
             var requestAlgorithm = getCsrAlgorithm(csrObject);

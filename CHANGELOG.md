@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed the `CertificateValidityInYears`, `Email`, and `OrganizationName` template enrollment
+  parameters. They were surfaced in Command's UI but never actually read anywhere - MarkMonitor's
+  API has no field to wire them up to - so setting them silently did nothing. If a template
+  referenced these parameters, remove them; they have no effect and are no longer offered.
+
 ### Fixed
 
 - `GetSingleRecord` no longer crashes on every call (`Convert.ToDateTime` was called on an `int`).
@@ -28,6 +35,19 @@ All notable changes to this project will be documented in this file.
   parsing uses a proper X.509 parser instead of naive string-splitting, `AdditionalEmails` parsing no
   longer produces empty entries, and the `X-API-KEY` header is no longer duplicated on repeated
   authentication.
+- The enrollment dedup cache now covers a retry that arrives while the first attempt is still in
+  flight, not just one that arrives after it already succeeded - previously that window could still
+  create a duplicate order.
+- `GetSingleOrderAsync` no longer swallows every failure (auth expiry, network error, malformed
+  response) to a silent `null`; it now throws, so `GetSingleRecord` reports the real error instead of
+  a false "not found".
+- `Revoke` now verifies the order actually belongs to the configured organization before revoking it,
+  rather than trusting the caller - most relevant to `RenewOrReissue`, where the prior cert's request
+  ID comes from Command's own certificate data rather than this org's enrollment history.
+- Concurrent calls that both see an expired token no longer both re-authenticate at once, which could
+  race writes to the shared bearer token and `HttpClient` headers.
+- `GetOrganizationAsync` now rejects a non-GUID org ID before making a request, matching the
+  validation already applied to order IDs.
 
 ### Security
 

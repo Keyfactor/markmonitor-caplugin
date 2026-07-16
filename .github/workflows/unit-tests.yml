@@ -23,6 +23,13 @@ jobs:
 
       # markmonitor-caplugin.Tests references markmonitor-caplugin, which restores several
       # Keyfactor.* packages from Keyfactor's GitHub Packages feed - not just nuget.org.
+      #
+      # Deliberately not locked down with a checked-in nuget.config + packageSourceMapping: the
+      # keyfactor-bootstrap-workflow's shared dotnet-build-and-release action adds its own NuGet
+      # source (named "github", credentialed with this same token) via the same mechanism, and a
+      # repo-wide nuget.config restricting Keyfactor.* to a source name/mapping this workflow alone
+      # controls would leave that other, already-green workflow's differently-named source
+      # unable to resolve any Keyfactor.* package.
       - name: Add Keyfactor GitHub Packages NuGet source
         run: |
           dotnet nuget add source "https://nuget.pkg.github.com/Keyfactor/index.json" \

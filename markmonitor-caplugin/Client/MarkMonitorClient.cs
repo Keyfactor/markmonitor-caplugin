@@ -1147,6 +1147,10 @@ public class MarkMonitorClient : IDisposable
                 _logger.LogDebug("No valid bearer token on hand - authenticating");
                 await AuthenticateAsync();
             }
+            else
+            {
+                _logger.LogDebug("Bearer token was refreshed by a concurrent caller while waiting on the auth lock - reusing it");
+            }
         }
         finally
         {

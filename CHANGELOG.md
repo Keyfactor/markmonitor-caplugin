@@ -68,6 +68,11 @@ All notable changes to this project will be documented in this file.
   dependency.
 - Added `.gitignore` rules for local setup scripts and sandbox test fixtures that carried live-looking
   credentials and org/contact data.
+- Organization name resolution (`ResolveOrganizationAsync`/`ResolveOrganizationIdAsync`) now requires
+  an exact (case-insensitive) name match instead of taking the first result from MarkMonitor's
+  `/certs/v1/organization` name search - a configured org name that happened to be a substring of
+  another org's name could otherwise silently resolve to the wrong organization, undermining the
+  cross-org ownership check in `Revoke` ([#9](../../issues/9)).
 
 ### Added
 

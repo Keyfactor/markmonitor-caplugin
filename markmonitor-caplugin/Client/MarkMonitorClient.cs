@@ -499,7 +499,12 @@ public class MarkMonitorClient : IDisposable
     {
         if (Guid.TryParse(orgNameOrId, out _)) return orgNameOrId;
         var orgs = await ListOrganizationsAsync(0, 1, orgNameOrId);
-        return orgs.FirstOrDefault()?.Id;
+        // MarkMonitor's own name filter may do substring/fuzzy matching rather than exact matching,
+        // so filter to an exact (case-insensitive) name match ourselves rather than trusting the
+        // first result - otherwise a configured name that's a substring of another org's name (e.g.
+        // "Acme" vs "Acme Corp Europe") could silently resolve to the wrong organization, which would
+        // undermine the cross-org ownership check in RevokeCertificateAsync.
+        return orgs.FirstOrDefault(o => string.Equals(o.Name, orgNameOrId, StringComparison.OrdinalIgnoreCase))?.Id;
     }
 
     public async Task<AnyCAPluginCertificate> GetSingleOrderAsync(string orderId)
@@ -792,8 +797,12 @@ public class MarkMonitorClient : IDisposable
             var orgs = await ListOrganizationsAsync(0, 1, orgNameOrId);
             _logger.LogTrace("Organizations found: {@Orgs}", orgs);
             // ListOrganizationsAsync throws rather than returning null on error, so orgs is never
-            // null here - just possibly empty.
-            org = orgs.FirstOrDefault();
+            // null here - just possibly empty. MarkMonitor's own name filter may do substring/fuzzy
+            // matching rather than exact matching, so filter to an exact (case-insensitive) name
+            // match ourselves rather than trusting the first result - otherwise a configured name
+            // that's a substring of another org's name (e.g. "Acme" vs "Acme Corp Europe") could
+            // silently resolve to the wrong organization.
+            org = orgs.FirstOrDefault(o => string.Equals(o.Name, orgNameOrId, StringComparison.OrdinalIgnoreCase));
         }
 
         _logger.LogTrace("Organization ID: {OrgId}", org?.Id);

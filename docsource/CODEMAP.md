@@ -85,6 +85,11 @@ pending set (`DIGI_PENDING`/`DIGI_PROCESSING`/`DIGI_REISSUE_PENDING`/`DIGI_WAITI
   durable store. Failed attempts are not cached.
 - **`OrgId`** accepts a name or GUID; blank `OrgId` skips the revoke ownership check for some paths
   but `Revoke` refuses to run without it.
+- **Org name resolution requires an exact (case-insensitive) name match** — `ResolveOrganizationAsync`/
+  `ResolveOrganizationIdAsync` filter MarkMonitor's `/certs/v1/organization?name=` search results down
+  to an exact match rather than taking the first result, since that endpoint's own matching semantics
+  aren't guaranteed to be exact (a configured name that's a substring of another org's name must not
+  silently resolve to the wrong org — [#9](../../issues/9)).
 - **Order IDs** are validated as GUIDs before being interpolated into URLs.
 - **Revocation reason** cannot be forwarded to MarkMonitor (no schema field).
 - **`ValidateProductInfo` is a no-op** — contact/group are resolved and defaulted at enroll time, not

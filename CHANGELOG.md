@@ -51,6 +51,11 @@ All notable changes to this project will be documented in this file.
 - `Enroll` now rejects an ECC CSR that uses explicit curve parameters instead of a named curve (e.g.
   P-256), with an actionable error message. MarkMonitor silently fails such an order almost instantly,
   with no reason surfaced anywhere in its API.
+- `FetchOrderAsync` (used by `GetSingleRecord` and `Revoke`'s ownership check) no longer re-sets the
+  shared `HttpClient`'s Authorization header itself, unguarded, after calling
+  `EnsureAuthenticatedAsync` - that bypassed the `_authLock` discipline the rest of the client relies
+  on, letting a concurrent `FetchOrderAsync` call (or a concurrent re-authentication) race writes to
+  the shared header ([#8](../../issues/8)).
 
 ### Security
 

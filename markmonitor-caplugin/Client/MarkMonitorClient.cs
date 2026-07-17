@@ -480,7 +480,11 @@ public class MarkMonitorClient : IDisposable
         ValidateGuidFormat(orderId, nameof(orderId), "MarkMonitor order ID");
         await EnsureAuthenticatedAsync();
 
-        _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _bearerToken);
+        // Do NOT re-set the Authorization header here: EnsureAuthenticatedAsync/AuthenticateAsync
+        // already set it once, under _authLock, whenever the token is (re)established - every other
+        // call site in this class relies on that same invariant. Setting it again here, unguarded,
+        // let a concurrent FetchOrderAsync call (or a concurrent re-authentication) race writes to
+        // the shared HttpClient's Authorization header (see GitHub issue #8).
         _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
         var response = await _httpClient.GetAsync($"{BaseUrl}/certs/v1/order/{orderId}");

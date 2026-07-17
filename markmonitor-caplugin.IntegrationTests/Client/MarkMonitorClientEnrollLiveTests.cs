@@ -83,7 +83,7 @@ public class MarkMonitorClientEnrollLiveTests
         {
             if (enrollResult != null)
             {
-                await OrderCleanup.CleanUpOrderAsync(client, enrollResult.CARequestID);
+                await OrderCleanup.CleanUpOrderAsync(client, enrollResult.CARequestID, config.OrgName);
             }
         }
     }

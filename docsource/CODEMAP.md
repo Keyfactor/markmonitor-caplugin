@@ -57,6 +57,9 @@ MarkMonitor's SSL API is backed by **DigiCert** (the only `provider` it supports
   path.
 - **Revoke:** requires `OrgId`; resolves it to a GUID, fetches order, compares owning org as parsed
   GUIDs, then `PATCH /certs/v1/order/{id}/revoke`. Reason code has no MarkMonitor field (logged only).
+  `CancelCertificateAsync` takes the same optional `orgName` parameter and runs the identical
+  cross-organization ownership check (shared via a private `EnsureOrderBelongsToOrganizationAsync`
+  helper) before `PATCH /certs/v1/order/{id}/cancel`.
 - **Sync:** `GET /certs/v1/order` paginated (fixed size 100), map status, assemble full chain,
   buffer issued certs. **Always full** — `lastSync`/`fullSync` not yet used for date filtering.
 

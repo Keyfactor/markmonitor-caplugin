@@ -15,17 +15,17 @@ namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.IntegrationTests;
 /// </summary>
 internal static class OrderCleanup
 {
-    public static async Task CleanUpOrderAsync(MarkMonitorClient client, string orderId)
+    public static async Task CleanUpOrderAsync(MarkMonitorClient client, string orderId, string? orgName = null)
     {
         try
         {
-            await client.CancelCertificateAsync(orderId);
+            await client.CancelCertificateAsync(orderId, orgName);
         }
         catch (Exception cancelEx)
         {
             try
             {
-                await client.RevokeCertificateAsync(orderId);
+                await client.RevokeCertificateAsync(orderId, orgName);
             }
             catch (Exception revokeEx)
             {

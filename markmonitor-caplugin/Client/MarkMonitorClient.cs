@@ -474,7 +474,7 @@ public class MarkMonitorClient : IDisposable
 
     /// <summary>Fetches the raw order content for a single order ID (used both to build the
     /// public-facing AnyCAPluginCertificate and, internally, to verify an order's owning
-    /// organization before revoking it).</summary>
+    /// organization before revoking or cancelling it).</summary>
     private async Task<OrderContent> FetchOrderAsync(string orderId)
     {
         ValidateGuidFormat(orderId, nameof(orderId), "MarkMonitor order ID");
@@ -505,6 +505,57 @@ public class MarkMonitorClient : IDisposable
         // "Acme" vs "Acme Corp Europe") could silently resolve to the wrong organization, which would
         // undermine the cross-org ownership check in RevokeCertificateAsync.
         return orgs.FirstOrDefault(o => string.Equals(o.Name, orgNameOrId, StringComparison.OrdinalIgnoreCase))?.Id;
+    }
+
+    /// <summary>
+    /// Verifies that <paramref name="orderId"/> belongs to the configured organization before
+    /// allowing a destructive action (revoke/cancel) against it. Shared by
+    /// <see cref="RevokeCertificateAsync"/> and <see cref="CancelCertificateAsync"/> so the two stay
+    /// behaviorally identical on this check.
+    ///
+    /// MarkMonitor's own ignoreOrgCheck=false default only guards against acting on an order that
+    /// belongs to a different reseller account entirely - it has no notion of the specific
+    /// sub-organization this CA connector is scoped to. That distinction matters most for
+    /// RenewOrReissue, where the order ID being revoked comes from Command's ICertificateDataReader
+    /// rather than from this org's own enrollment - so verify it here rather than trusting the
+    /// caller (or MarkMonitor) to have scoped it correctly.
+    ///
+    /// A blank orgName intentionally skips this check (ad-hoc/manual callers that don't scope by
+    /// organization), but that must never happen silently - it's logged explicitly so a production
+    /// caller unexpectedly hitting this path (e.g. a misconfigured OrgId) is visible in the logs
+    /// rather than looking identical to a passing check.
+    /// </summary>
+    /// <param name="orderId">The order being acted on.</param>
+    /// <param name="orgName">The configured organization name or GUID; blank skips the check.</param>
+    /// <param name="actionGerund">Present-participle form of the action for log text (e.g. "Revoking", "Cancelling").</param>
+    /// <param name="actionVerb">Infinitive form of the action for log/exception text (e.g. "revoke", "cancel").</param>
+    private async Task EnsureOrderBelongsToOrganizationAsync(string orderId, string orgName, string actionGerund,
+        string actionVerb)
+    {
+        if (string.IsNullOrWhiteSpace(orgName))
+        {
+            _logger.LogWarning(
+                "{ActionGerund} order {OrderId} with no organization to verify ownership against - the cross-organization ownership check was skipped",
+                actionGerund, orderId);
+            return;
+        }
+
+        var expectedOrgId = await ResolveOrganizationIdAsync(orgName);
+        var order = await FetchOrderAsync(orderId);
+        // Comparing as parsed Guids, not raw strings: Guid.TryParse accepts several textual
+        // formats (braces, no dashes, etc.), so an admin-configured OrgId in a non-canonical
+        // format must still match MarkMonitor's own canonical serialization of the same GUID.
+        var actualOrgIdParsed = Guid.TryParse(order.OrganizationId, out var actualOrgId) ? actualOrgId : (Guid?)null;
+        var expectedOrgIdParsed = expectedOrgId != null && Guid.TryParse(expectedOrgId, out var parsedExpected)
+            ? parsedExpected
+            : (Guid?)null;
+        if (expectedOrgIdParsed == null || actualOrgIdParsed == null || actualOrgIdParsed != expectedOrgIdParsed)
+        {
+            _logger.LogError(
+                "Refusing to {ActionVerb} order {OrderId}: it belongs to organization {ActualOrgId}, but the configured organization {ConfiguredOrgName} resolved to {ExpectedOrgId}",
+                actionVerb, orderId, order.OrganizationId, orgName, expectedOrgId);
+            throw new Exception($"Order {orderId} belongs to a different organization than the configured '{orgName}' - refusing to {actionVerb} it");
+        }
     }
 
     public async Task<AnyCAPluginCertificate> GetSingleOrderAsync(string orderId)
@@ -973,17 +1024,19 @@ public class MarkMonitorClient : IDisposable
         }
     }
 
-    public async Task<bool> CancelCertificateAsync(string orderId)
+    public async Task<bool> CancelCertificateAsync(string orderId, string orgName = null)
     {
         _logger.MethodEntry();
         try
         {
             ValidateGuidFormat(orderId, nameof(orderId), "MarkMonitor order ID");
-            _logger.LogInformation("Revoking certificate {CertificateId}", orderId);
+            _logger.LogInformation("Cancelling certificate {CertificateId}", orderId);
             await EnsureAuthenticatedAsync();
 
+            await EnsureOrderBelongsToOrganizationAsync(orderId, orgName, "Cancelling", "cancel");
+
             var url = $"{BaseUrl}/certs/v1/order/{orderId}/cancel";
-            _logger.LogDebug("Revoking certificate at {Url}", url);
+            _logger.LogDebug("Cancelling certificate at {Url}", url);
             var payload = new StringContent("{}", Encoding.UTF8, "application/json");
             var response = await _httpClient.PatchAsync(url, payload);
 
@@ -991,7 +1044,7 @@ public class MarkMonitorClient : IDisposable
             var content = await response.Content.ReadAsStringAsync();
             if (response.IsSuccessStatusCode)
             {
-                _logger.LogInformation("Certificate {CertificateId} has been revoked", orderId);
+                _logger.LogInformation("Certificate {CertificateId} has been cancelled", orderId);
                 return true;
             }
 
@@ -1005,6 +1058,10 @@ public class MarkMonitorClient : IDisposable
             _logger.LogError("An error has occurred while attempting to cancel {CertificateId}: {EMessage}", orderId,
                 e.Message);
             throw;
+        }
+        finally
+        {
+            _logger.MethodExit();
         }
     }
 
@@ -1069,42 +1126,7 @@ public class MarkMonitorClient : IDisposable
                     reason, orderId);
             await EnsureAuthenticatedAsync();
 
-            // MarkMonitor's own ignoreOrgCheck=false default only guards against revoking an order
-            // that belongs to a different reseller account entirely - it has no notion of the
-            // specific sub-organization this CA connector is scoped to. That distinction matters most
-            // for RenewOrReissue, where the order ID being revoked comes from Command's
-            // ICertificateDataReader rather than from this org's own enrollment - so verify it here
-            // rather than trusting the caller (or MarkMonitor) to have scoped it correctly.
-            //
-            // A blank orgName intentionally skips this check (ad-hoc/manual callers that don't scope
-            // by organization), but that must never happen silently - it's logged explicitly so a
-            // production caller unexpectedly hitting this path (e.g. a misconfigured OrgId) is
-            // visible in the logs rather than looking identical to a passing check.
-            if (string.IsNullOrWhiteSpace(orgName))
-            {
-                _logger.LogWarning(
-                    "Revoking order {OrderId} with no organization to verify ownership against - the cross-organization ownership check was skipped",
-                    orderId);
-            }
-            else
-            {
-                var expectedOrgId = await ResolveOrganizationIdAsync(orgName);
-                var order = await FetchOrderAsync(orderId);
-                // Comparing as parsed Guids, not raw strings: Guid.TryParse accepts several textual
-                // formats (braces, no dashes, etc.), so an admin-configured OrgId in a non-canonical
-                // format must still match MarkMonitor's own canonical serialization of the same GUID.
-                var actualOrgIdParsed = Guid.TryParse(order.OrganizationId, out var actualOrgId) ? actualOrgId : (Guid?)null;
-                var expectedOrgIdParsed = expectedOrgId != null && Guid.TryParse(expectedOrgId, out var parsedExpected)
-                    ? parsedExpected
-                    : (Guid?)null;
-                if (expectedOrgIdParsed == null || actualOrgIdParsed == null || actualOrgIdParsed != expectedOrgIdParsed)
-                {
-                    _logger.LogError(
-                        "Refusing to revoke order {OrderId}: it belongs to organization {ActualOrgId}, but the configured organization {ConfiguredOrgName} resolved to {ExpectedOrgId}",
-                        orderId, order.OrganizationId, orgName, expectedOrgId);
-                    throw new Exception($"Order {orderId} belongs to a different organization than the configured '{orgName}' - refusing to revoke it");
-                }
-            }
+            await EnsureOrderBelongsToOrganizationAsync(orderId, orgName, "Revoking", "revoke");
 
             var url = $"{BaseUrl}/certs/v1/order/{orderId}/revoke";
             _logger.LogDebug("Revoking certificate at {Url}", url);

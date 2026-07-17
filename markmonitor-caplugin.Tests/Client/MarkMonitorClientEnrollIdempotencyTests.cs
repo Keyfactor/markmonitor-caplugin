@@ -1,6 +1,9 @@
+using System.Collections.Concurrent;
 using System.Net;
 using Keyfactor.Extensions.CAPlugin.MarkMonitor.Client;
 using Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.TestHelpers;
+using Keyfactor.Logging;
+using Microsoft.Extensions.Logging;
 
 namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.Client;
 
@@ -51,6 +54,55 @@ public class MarkMonitorClientEnrollIdempotencyTests
             new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
 
         Assert.Equal(2, OrderCreationCount(handler));
+    }
+
+    [Fact]
+    public async Task EnrollCertificateAsync_CalledTwiceWithTheSameCsrAndSubject_DedupeLogIncludesResolvedCARequestID()
+    {
+        // Regression test for https://github.com/Keyfactor/markmonitor-caplugin/issues/7 - the
+        // dedup-hit warning used to be logged before awaiting the in-flight reservation, so it could
+        // never report the CARequestID the caller was actually folded into. It must now be logged
+        // after the reservation resolves, and must include that CARequestID.
+        var capturingFactory = new CapturingLoggerFactory();
+        LogHandler.Factory = capturingFactory;
+
+        var handler = BuildHandler();
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+
+        var first = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
+        var second = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
+
+        Assert.Equal(1, OrderCreationCount(handler));
+        Assert.Equal(first.CARequestID, second.CARequestID);
+
+        var dedupeLog = Assert.Single(capturingFactory.Entries,
+            e => e.Level == LogLevel.Warning && e.Message.Contains("already submitted", StringComparison.Ordinal));
+        Assert.Contains(first.CARequestID, dedupeLog.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>A minimal ILoggerFactory that captures formatted log messages so a test can assert on
+    /// their content, wired up via Keyfactor.Logging's LogHandler.Factory seam (the same seam other
+    /// AnyCA plugins use in tests to point logging somewhere observable).</summary>
+    private sealed class CapturingLoggerFactory : ILoggerFactory
+    {
+        public ConcurrentQueue<(LogLevel Level, string Message)> Entries { get; } = new();
+
+        public ILogger CreateLogger(string categoryName) => new CapturingLogger(Entries);
+        public void AddProvider(ILoggerProvider provider) { }
+        public void Dispose() { }
+
+        private sealed class CapturingLogger(ConcurrentQueue<(LogLevel, string)> entries) : ILogger
+        {
+            IDisposable? ILogger.BeginScope<TState>(TState state) => null;
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                Func<TState, Exception?, string> formatter) =>
+                entries.Enqueue((logLevel, formatter(state, exception)));
+        }
     }
 
     [Fact]

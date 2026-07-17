@@ -661,10 +661,11 @@ public class MarkMonitorClient : IDisposable
             var now = _timeProvider.GetUtcNow().UtcDateTime;
             if (_recentEnrollments.TryGetValue(dedupeKey, out var existing) && IsReservationStillActive(existing, now))
             {
+                var dedupedResult = await existing.Tcs.Task;
                 _logger.LogWarning(
-                    "An identical enrollment for subject {Subject} was already submitted in the last {Minutes} minute(s) - awaiting that result instead of creating a duplicate order",
-                    subject, RecentEnrollmentWindow.TotalMinutes);
-                return await existing.Tcs.Task;
+                    "An identical enrollment for subject {Subject} was already submitted in the last {Minutes} minute(s) - folded into existing order {CARequestID} instead of creating a duplicate",
+                    subject, RecentEnrollmentWindow.TotalMinutes, dedupedResult.CARequestID);
+                return dedupedResult;
             }
 
             // Reserve this key *before* doing any real work, so a retry that arrives while this

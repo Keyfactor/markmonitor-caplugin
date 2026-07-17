@@ -56,6 +56,9 @@ All notable changes to this project will be documented in this file.
   `EnsureAuthenticatedAsync` - that bypassed the `_authLock` discipline the rest of the client relies
   on, letting a concurrent `FetchOrderAsync` call (or a concurrent re-authentication) race writes to
   the shared header ([#8](../../issues/8)).
+- The enrollment dedup-hit log message now reports the resolved `CARequestID` instead of firing before
+  the in-flight reservation resolves, so a dedup hit can actually be correlated with the order it was
+  folded into ([#7](../../issues/7)).
 
 ### Security
 

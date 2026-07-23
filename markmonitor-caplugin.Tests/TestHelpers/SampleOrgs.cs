@@ -33,4 +33,14 @@ public static class SampleOrgs
             "page": { "size": 1, "totalElements": 1, "totalPages": 1, "number": 0 }
           }
           """;
+
+    /// <summary>Builds a multi-org list response, for exercising resolution against a search result
+    /// that contains more than one candidate (e.g. a substring-name false positive).</summary>
+    public static string OrgsListResponse(params string[] orgJsons) =>
+        $$"""
+          {
+            "content": [{{string.Join(",", orgJsons)}}],
+            "page": { "size": {{orgJsons.Length}}, "totalElements": {{orgJsons.Length}}, "totalPages": 1, "number": 0 }
+          }
+          """;
 }

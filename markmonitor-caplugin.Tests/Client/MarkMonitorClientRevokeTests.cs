@@ -79,4 +79,28 @@ public class MarkMonitorClientRevokeTests
         Assert.True(result);
         Assert.DoesNotContain(handler.Requests, r => FakeHttpMessageHandler.Is(r, "GET", "/certs/v1/organization"));
     }
+
+    [Fact]
+    public async Task RevokeCertificateAsync_WithOrgNameGuidInADifferentTextualFormat_StillMatchesTheOrder()
+    {
+        // Guid.TryParse accepts several textual formats (braces, no dashes, etc.) that an admin could
+        // legitimately configure, but MarkMonitor's API always serializes organizationId in one
+        // canonical form. The comparison must be by parsed Guid value, not raw string equality, or a
+        // legitimately-configured OrgId in a non-canonical format would be rejected as "wrong org".
+        const string orderId = "11111111-1111-1111-1111-111111111111";
+        const string orgIdBraces = "{11111111-1111-1111-1111-111111111111}";
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", $"/certs/v1/order/{orderId}"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrders.OrderWithCert(orderId, "DIGI_ISSUED", organizationId: SampleOrgs.DefaultOrgId)))
+            .When(req => FakeHttpMessageHandler.Is(req, "PATCH", $"/certs/v1/order/{orderId}/revoke"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK, "{}"));
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+
+        var result = await client.RevokeCertificateAsync(orderId, orgIdBraces);
+
+        Assert.True(result);
+    }
 }

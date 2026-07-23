@@ -18,6 +18,7 @@ public sealed class FakeHttpMessageHandler : HttpMessageHandler
         public required Queue<Func<HttpRequestMessage, Task<HttpResponseMessage>>> Responses;
     }
 
+    private readonly object _lock = new();
     private readonly List<Route> _routes = new();
     public List<HttpRequestMessage> Requests { get; } = new();
 
@@ -34,11 +35,15 @@ public sealed class FakeHttpMessageHandler : HttpMessageHandler
     public FakeHttpMessageHandler WhenAsync(Func<HttpRequestMessage, bool> matches,
         params Func<HttpRequestMessage, Task<HttpResponseMessage>>[] responseFactories)
     {
-        _routes.Add(new Route
+        var route = new Route
         {
             Matches = matches,
             Responses = new Queue<Func<HttpRequestMessage, Task<HttpResponseMessage>>>(responseFactories)
-        });
+        };
+        lock (_lock)
+        {
+            _routes.Add(route);
+        }
         return this;
     }
 
@@ -55,14 +60,19 @@ public sealed class FakeHttpMessageHandler : HttpMessageHandler
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
-        Requests.Add(request);
-        var route = _routes.LastOrDefault(r => r.Matches(request) && r.Responses.Count > 0)
-                    ?? _routes.LastOrDefault(r => r.Matches(request));
+        Func<HttpRequestMessage, Task<HttpResponseMessage>> factory;
+        lock (_lock)
+        {
+            Requests.Add(request);
+            var route = _routes.LastOrDefault(r => r.Matches(request) && r.Responses.Count > 0)
+                        ?? _routes.LastOrDefault(r => r.Matches(request));
 
-        if (route == null)
-            throw new InvalidOperationException($"No fake response registered for {request.Method} {request.RequestUri}");
+            if (route == null)
+                throw new InvalidOperationException($"No fake response registered for {request.Method} {request.RequestUri}");
 
-        var factory = route.Responses.Count > 1 ? route.Responses.Dequeue() : route.Responses.Peek();
+            factory = route.Responses.Count > 1 ? route.Responses.Dequeue() : route.Responses.Peek();
+        }
+
         return await factory(request);
     }
 

@@ -161,6 +161,8 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         _logger.MethodEntry();
         try
         {
+            EnsureOrgNameConfigured();
+
             _logger.LogInformation(
                 "Revoking certificate with CARequestID: {CaRequestId}, SerialNumber: {HexSerialNumber}, Reason: {RevocationReason}",
                 orderId, hexSerialNumber, revocationReason);
@@ -256,6 +258,8 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
 
         try
         {
+            EnsureOrgNameConfigured();
+
             _logger.LogInformation(
                 "Revoking prior certificate {PriorRequestId} (serial {PriorCertSn}) after it was replaced by {NewCaRequestId}",
                 priorRequestId, priorCertSn, newCaRequestId);
@@ -267,6 +271,20 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
                 "Failed to revoke prior certificate {PriorRequestId} after it was replaced by {NewCaRequestId}: {EMessage}",
                 priorRequestId, newCaRequestId, e.Message);
         }
+    }
+
+    /// <summary>
+    /// RevokeCertificateAsync's cross-org ownership check is skipped (not rejected) when its
+    /// orgName parameter is blank - a deliberate allowance for ad-hoc/manual callers that don't
+    /// scope by organization. Initialize() never re-validates the deserialized config, so without
+    /// this guard a plugin instance loaded with a blank OrgId would silently revoke without any
+    /// organization check at all, on every Revoke call this connector makes.
+    /// </summary>
+    private void EnsureOrgNameConfigured()
+    {
+        if (string.IsNullOrWhiteSpace(_config.OrgName))
+            throw new ConfigurationValidationException(
+                "MarkMonitor OrgId is not configured - refusing to revoke without an organization to verify ownership against");
     }
 
     public async Task Ping()

@@ -10,6 +10,7 @@ using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Org.BouncyCastle.Asn1.X509;
+using Org.BouncyCastle.Asn1.X9;
 using Org.BouncyCastle.Pkcs;
 using Org.BouncyCastle.Tls;
 
@@ -414,8 +415,11 @@ public class MarkMonitorClient : IDisposable
         }
         catch (Exception e)
         {
+            // Rethrow rather than swallow to null - a transient auth/network/parsing failure here
+            // must not be reported to the caller identically to "this organization doesn't exist"
+            // (same class of gap already fixed in GetSingleOrderAsync).
             _logger.LogError("An error has occurred: {EMessage}", e.Message);
-            return null;
+            throw;
         }
         finally
         {
@@ -470,13 +474,17 @@ public class MarkMonitorClient : IDisposable
 
     /// <summary>Fetches the raw order content for a single order ID (used both to build the
     /// public-facing AnyCAPluginCertificate and, internally, to verify an order's owning
-    /// organization before revoking it).</summary>
+    /// organization before revoking or cancelling it).</summary>
     private async Task<OrderContent> FetchOrderAsync(string orderId)
     {
         ValidateGuidFormat(orderId, nameof(orderId), "MarkMonitor order ID");
         await EnsureAuthenticatedAsync();
 
-        _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _bearerToken);
+        // Do NOT re-set the Authorization header here: EnsureAuthenticatedAsync/AuthenticateAsync
+        // already set it once, under _authLock, whenever the token is (re)established - every other
+        // call site in this class relies on that same invariant. Setting it again here, unguarded,
+        // let a concurrent FetchOrderAsync call (or a concurrent re-authentication) race writes to
+        // the shared HttpClient's Authorization header (see GitHub issue #8).
         _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
         var response = await _httpClient.GetAsync($"{BaseUrl}/certs/v1/order/{orderId}");
@@ -491,7 +499,63 @@ public class MarkMonitorClient : IDisposable
     {
         if (Guid.TryParse(orgNameOrId, out _)) return orgNameOrId;
         var orgs = await ListOrganizationsAsync(0, 1, orgNameOrId);
-        return orgs.FirstOrDefault()?.Id;
+        // MarkMonitor's own name filter may do substring/fuzzy matching rather than exact matching,
+        // so filter to an exact (case-insensitive) name match ourselves rather than trusting the
+        // first result - otherwise a configured name that's a substring of another org's name (e.g.
+        // "Acme" vs "Acme Corp Europe") could silently resolve to the wrong organization, which would
+        // undermine the cross-org ownership check in RevokeCertificateAsync.
+        return orgs.FirstOrDefault(o => string.Equals(o.Name, orgNameOrId, StringComparison.OrdinalIgnoreCase))?.Id;
+    }
+
+    /// <summary>
+    /// Verifies that <paramref name="orderId"/> belongs to the configured organization before
+    /// allowing a destructive action (revoke/cancel) against it. Shared by
+    /// <see cref="RevokeCertificateAsync"/> and <see cref="CancelCertificateAsync"/> so the two stay
+    /// behaviorally identical on this check.
+    ///
+    /// MarkMonitor's own ignoreOrgCheck=false default only guards against acting on an order that
+    /// belongs to a different reseller account entirely - it has no notion of the specific
+    /// sub-organization this CA connector is scoped to. That distinction matters most for
+    /// RenewOrReissue, where the order ID being revoked comes from Command's ICertificateDataReader
+    /// rather than from this org's own enrollment - so verify it here rather than trusting the
+    /// caller (or MarkMonitor) to have scoped it correctly.
+    ///
+    /// A blank orgName intentionally skips this check (ad-hoc/manual callers that don't scope by
+    /// organization), but that must never happen silently - it's logged explicitly so a production
+    /// caller unexpectedly hitting this path (e.g. a misconfigured OrgId) is visible in the logs
+    /// rather than looking identical to a passing check.
+    /// </summary>
+    /// <param name="orderId">The order being acted on.</param>
+    /// <param name="orgName">The configured organization name or GUID; blank skips the check.</param>
+    /// <param name="actionGerund">Present-participle form of the action for log text (e.g. "Revoking", "Cancelling").</param>
+    /// <param name="actionVerb">Infinitive form of the action for log/exception text (e.g. "revoke", "cancel").</param>
+    private async Task EnsureOrderBelongsToOrganizationAsync(string orderId, string orgName, string actionGerund,
+        string actionVerb)
+    {
+        if (string.IsNullOrWhiteSpace(orgName))
+        {
+            _logger.LogWarning(
+                "{ActionGerund} order {OrderId} with no organization to verify ownership against - the cross-organization ownership check was skipped",
+                actionGerund, orderId);
+            return;
+        }
+
+        var expectedOrgId = await ResolveOrganizationIdAsync(orgName);
+        var order = await FetchOrderAsync(orderId);
+        // Comparing as parsed Guids, not raw strings: Guid.TryParse accepts several textual
+        // formats (braces, no dashes, etc.), so an admin-configured OrgId in a non-canonical
+        // format must still match MarkMonitor's own canonical serialization of the same GUID.
+        var actualOrgIdParsed = Guid.TryParse(order.OrganizationId, out var actualOrgId) ? actualOrgId : (Guid?)null;
+        var expectedOrgIdParsed = expectedOrgId != null && Guid.TryParse(expectedOrgId, out var parsedExpected)
+            ? parsedExpected
+            : (Guid?)null;
+        if (expectedOrgIdParsed == null || actualOrgIdParsed == null || actualOrgIdParsed != expectedOrgIdParsed)
+        {
+            _logger.LogError(
+                "Refusing to {ActionVerb} order {OrderId}: it belongs to organization {ActualOrgId}, but the configured organization {ConfiguredOrgName} resolved to {ExpectedOrgId}",
+                actionVerb, orderId, order.OrganizationId, orgName, expectedOrgId);
+            throw new Exception($"Order {orderId} belongs to a different organization than the configured '{orgName}' - refusing to {actionVerb} it");
+        }
     }
 
     public async Task<AnyCAPluginCertificate> GetSingleOrderAsync(string orderId)
@@ -551,6 +615,37 @@ public class MarkMonitorClient : IDisposable
         return requestAlgorithm;
     }
 
+    private const string EcPublicKeyOid = "1.2.840.10045.2.1";
+
+    /// <summary>
+    /// MarkMonitor's DigiCert-backed products silently reject an ECC CSR whose public key uses
+    /// explicit curve parameters (the curve's prime/coefficients/base point spelled out) instead of
+    /// a named-curve OID reference - the order fails almost instantly with no reason surfaced
+    /// anywhere in MarkMonitor's API (confirmed by decoding a real rejected order's CSR). CA/Browser
+    /// Forum baseline requirements disallow explicit parameters for publicly-trusted certs, so this
+    /// fails fast with an actionable message here rather than silently forwarding an order that
+    /// MarkMonitor will just as silently fail.
+    /// </summary>
+    private static void ValidateEccCsrUsesNamedCurve(SubjectPublicKeyInfo publicKeyInfo)
+    {
+        if (publicKeyInfo.Algorithm.Algorithm.Id != EcPublicKeyOid) return;
+
+        var ecParameters = X962Parameters.GetInstance(publicKeyInfo.Algorithm.Parameters);
+        if (!ecParameters.IsNamedCurve)
+            throw new ArgumentException(
+                "ECC CSR uses explicit curve parameters instead of a named curve (e.g. P-256/secp256r1) - MarkMonitor requires a named curve and will silently fail the order otherwise");
+    }
+
+    // A reservation is "still active" - and must keep being awaited rather than replaced - if either
+    // its nominal window hasn't elapsed yet, or its own call simply hasn't finished yet. The latter
+    // matters when a call's real work (org/group lookups, CSR parsing, the order-create HTTP call
+    // itself) takes longer than RecentEnrollmentWindow: without it, a retry arriving after the nominal
+    // window - but while the original call is still genuinely in flight - would win a fresh
+    // reservation and create a real second order, exactly the outcome this cache exists to prevent.
+    private static bool IsReservationStillActive(
+        (DateTime ExpiresAtUtc, TaskCompletionSource<EnrollmentResult> Tcs) entry, DateTime now) =>
+        entry.ExpiresAtUtc > now || !entry.Tcs.Task.IsCompleted;
+
     public async Task<EnrollmentResult> EnrollCertificateAsync(string csr, string subject,
         Dictionary<string, string[]> san, string orderType, Dictionary<string, string> productParams,
         MarkMonitorConfig config)
@@ -558,17 +653,19 @@ public class MarkMonitorClient : IDisposable
         _logger.MethodEntry();
         var dedupeKey = $"{config.OrgName}|{orderType}|{subject}|{csr}";
         TaskCompletionSource<EnrollmentResult> ownedReservation = null;
+        (DateTime ExpiresAtUtc, TaskCompletionSource<EnrollmentResult> Tcs) ownedEntry = default;
         try
         {
             await EnsureAuthenticatedAsync();
 
             var now = _timeProvider.GetUtcNow().UtcDateTime;
-            if (_recentEnrollments.TryGetValue(dedupeKey, out var existing) && existing.ExpiresAtUtc > now)
+            if (_recentEnrollments.TryGetValue(dedupeKey, out var existing) && IsReservationStillActive(existing, now))
             {
+                var dedupedResult = await existing.Tcs.Task;
                 _logger.LogWarning(
-                    "An identical enrollment for subject {Subject} was already submitted in the last {Minutes} minute(s) - awaiting that result instead of creating a duplicate order",
-                    subject, RecentEnrollmentWindow.TotalMinutes);
-                return await existing.Tcs.Task;
+                    "An identical enrollment for subject {Subject} was already submitted in the last {Minutes} minute(s) - folded into existing order {CARequestID} instead of creating a duplicate",
+                    subject, RecentEnrollmentWindow.TotalMinutes, dedupedResult.CARequestID);
+                return dedupedResult;
             }
 
             // Reserve this key *before* doing any real work, so a retry that arrives while this
@@ -576,13 +673,17 @@ public class MarkMonitorClient : IDisposable
             // the reservation and awaits it, rather than racing to create a second order.
             var candidateTcs =
                 new TaskCompletionSource<EnrollmentResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-            // AddOrUpdate, not GetOrAdd: an expired entry must be replaced, not returned as-is -
-            // GetOrAdd would hand back the stale (already-completed) reservation forever once one
-            // exists for this key.
+            // AddOrUpdate, not GetOrAdd: an expired-and-completed entry must be replaced, not returned
+            // as-is - GetOrAdd would hand back the stale (already-completed) reservation forever once
+            // one exists for this key. A reservation is only replaced once BOTH its nominal window has
+            // elapsed AND its own call has actually finished - a still-running call that happens to run
+            // longer than the window must keep being awaited, not raced by a second real order.
             var reserved = _recentEnrollments.AddOrUpdate(
                 dedupeKey,
                 (now + RecentEnrollmentWindow, candidateTcs),
-                (_, current) => current.ExpiresAtUtc > now ? current : (now + RecentEnrollmentWindow, candidateTcs));
+                (_, current) => IsReservationStillActive(current, now)
+                    ? current
+                    : (now + RecentEnrollmentWindow, candidateTcs));
             if (reserved.Tcs != candidateTcs)
             {
                 _logger.LogWarning(
@@ -592,6 +693,7 @@ public class MarkMonitorClient : IDisposable
             }
 
             ownedReservation = candidateTcs;
+            ownedEntry = reserved;
 
             var caseInsensitiveParams = new Dictionary<string, string>(productParams, StringComparer.OrdinalIgnoreCase);
 
@@ -652,6 +754,7 @@ public class MarkMonitorClient : IDisposable
             _logger.LogDebug("Deserializing CSR");
             var csrObject = new Pkcs10CertificationRequest(GetCsrBytes(csr));
             var csrInfo = csrObject.GetCertificationRequestInfo();
+            ValidateEccCsrUsesNamedCurve(csrInfo.SubjectPublicKeyInfo);
 
             _logger.LogDebug("Determining CSR algorithm");
             var requestAlgorithm = getCsrAlgorithm(csrObject);
@@ -714,9 +817,14 @@ public class MarkMonitorClient : IDisposable
             if (ownedReservation != null)
             {
                 // Don't cache a failed attempt - a retry after a real failure should get a fresh
-                // attempt, not be stuck replaying this exception until the window expires.
+                // attempt, not be stuck replaying this exception until the window expires. Conditional
+                // TryRemove, not a bare key-based one: if this reservation's own window already expired
+                // while this call was still running, a different caller may have since won a fresh
+                // reservation for the same key - an unconditional remove would delete THEIR entry
+                // instead of (the no-longer-present) one this call owned.
                 ownedReservation.SetException(e);
-                _recentEnrollments.TryRemove(dedupeKey, out _);
+                ((ICollection<KeyValuePair<string, (DateTime, TaskCompletionSource<EnrollmentResult>)>>)_recentEnrollments)
+                    .Remove(new KeyValuePair<string, (DateTime, TaskCompletionSource<EnrollmentResult>)>(dedupeKey, ownedEntry));
             }
 
             throw;
@@ -741,8 +849,12 @@ public class MarkMonitorClient : IDisposable
             var orgs = await ListOrganizationsAsync(0, 1, orgNameOrId);
             _logger.LogTrace("Organizations found: {@Orgs}", orgs);
             // ListOrganizationsAsync throws rather than returning null on error, so orgs is never
-            // null here - just possibly empty.
-            org = orgs.FirstOrDefault();
+            // null here - just possibly empty. MarkMonitor's own name filter may do substring/fuzzy
+            // matching rather than exact matching, so filter to an exact (case-insensitive) name
+            // match ourselves rather than trusting the first result - otherwise a configured name
+            // that's a substring of another org's name (e.g. "Acme" vs "Acme Corp Europe") could
+            // silently resolve to the wrong organization.
+            org = orgs.FirstOrDefault(o => string.Equals(o.Name, orgNameOrId, StringComparison.OrdinalIgnoreCase));
         }
 
         _logger.LogTrace("Organization ID: {OrgId}", org?.Id);
@@ -913,17 +1025,19 @@ public class MarkMonitorClient : IDisposable
         }
     }
 
-    public async Task<bool> CancelCertificateAsync(string orderId)
+    public async Task<bool> CancelCertificateAsync(string orderId, string orgName = null)
     {
         _logger.MethodEntry();
         try
         {
             ValidateGuidFormat(orderId, nameof(orderId), "MarkMonitor order ID");
-            _logger.LogInformation("Revoking certificate {CertificateId}", orderId);
+            _logger.LogInformation("Cancelling certificate {CertificateId}", orderId);
             await EnsureAuthenticatedAsync();
 
+            await EnsureOrderBelongsToOrganizationAsync(orderId, orgName, "Cancelling", "cancel");
+
             var url = $"{BaseUrl}/certs/v1/order/{orderId}/cancel";
-            _logger.LogDebug("Revoking certificate at {Url}", url);
+            _logger.LogDebug("Cancelling certificate at {Url}", url);
             var payload = new StringContent("{}", Encoding.UTF8, "application/json");
             var response = await _httpClient.PatchAsync(url, payload);
 
@@ -931,7 +1045,7 @@ public class MarkMonitorClient : IDisposable
             var content = await response.Content.ReadAsStringAsync();
             if (response.IsSuccessStatusCode)
             {
-                _logger.LogInformation("Certificate {CertificateId} has been revoked", orderId);
+                _logger.LogInformation("Certificate {CertificateId} has been cancelled", orderId);
                 return true;
             }
 
@@ -945,6 +1059,10 @@ public class MarkMonitorClient : IDisposable
             _logger.LogError("An error has occurred while attempting to cancel {CertificateId}: {EMessage}", orderId,
                 e.Message);
             throw;
+        }
+        finally
+        {
+            _logger.MethodExit();
         }
     }
 
@@ -1009,25 +1127,7 @@ public class MarkMonitorClient : IDisposable
                     reason, orderId);
             await EnsureAuthenticatedAsync();
 
-            // MarkMonitor's own ignoreOrgCheck=false default only guards against revoking an order
-            // that belongs to a different reseller account entirely - it has no notion of the
-            // specific sub-organization this CA connector is scoped to. That distinction matters most
-            // for RenewOrReissue, where the order ID being revoked comes from Command's
-            // ICertificateDataReader rather than from this org's own enrollment - so verify it here
-            // rather than trusting the caller (or MarkMonitor) to have scoped it correctly.
-            if (!string.IsNullOrWhiteSpace(orgName))
-            {
-                var expectedOrgId = await ResolveOrganizationIdAsync(orgName);
-                var order = await FetchOrderAsync(orderId);
-                if (expectedOrgId == null ||
-                    !string.Equals(order.OrganizationId, expectedOrgId, StringComparison.OrdinalIgnoreCase))
-                {
-                    var orgMismatchMsg =
-                        $"Order {orderId} belongs to a different organization than the configured '{orgName}' - refusing to revoke it";
-                    _logger.LogError("{ErrMsg}", orgMismatchMsg);
-                    throw new Exception(orgMismatchMsg);
-                }
-            }
+            await EnsureOrderBelongsToOrganizationAsync(orderId, orgName, "Revoking", "revoke");
 
             var url = $"{BaseUrl}/certs/v1/order/{orderId}/revoke";
             _logger.LogDebug("Revoking certificate at {Url}", url);
@@ -1078,6 +1178,10 @@ public class MarkMonitorClient : IDisposable
             {
                 _logger.LogDebug("No valid bearer token on hand - authenticating");
                 await AuthenticateAsync();
+            }
+            else
+            {
+                _logger.LogDebug("Bearer token was refreshed by a concurrent caller while waiting on the auth lock - reusing it");
             }
         }
         finally

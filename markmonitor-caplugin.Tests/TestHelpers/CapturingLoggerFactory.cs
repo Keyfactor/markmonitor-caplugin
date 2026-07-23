@@ -1,0 +1,41 @@
+using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
+
+namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.TestHelpers;
+
+/// <summary>A minimal ILoggerFactory that records every formatted log message it's given, so tests
+/// can assert on log output emitted via Keyfactor.Logging's LogHandler (which only exposes a
+/// settable Factory, not the concrete Microsoft.Extensions.Logging.LoggerFactory type).</summary>
+public sealed class CapturingLoggerFactory : ILoggerFactory
+{
+    public ConcurrentQueue<string> Messages { get; } = new();
+
+    public ILogger CreateLogger(string categoryName) => new CapturingLogger(Messages);
+
+    public void AddProvider(ILoggerProvider provider)
+    {
+    }
+
+    public void Dispose()
+    {
+    }
+
+    private sealed class CapturingLogger(ConcurrentQueue<string> messages) : ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => NoopScope.Instance;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            messages.Enqueue(formatter(state, exception));
+
+        private sealed class NoopScope : IDisposable
+        {
+            public static readonly NoopScope Instance = new();
+            public void Dispose()
+            {
+            }
+        }
+    }
+}

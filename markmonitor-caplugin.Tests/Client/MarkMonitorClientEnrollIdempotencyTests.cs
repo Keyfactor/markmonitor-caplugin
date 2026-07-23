@@ -1,6 +1,9 @@
+using System.Collections.Concurrent;
 using System.Net;
 using Keyfactor.Extensions.CAPlugin.MarkMonitor.Client;
 using Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.TestHelpers;
+using Keyfactor.Logging;
+using Microsoft.Extensions.Logging;
 
 namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.Client;
 
@@ -54,6 +57,55 @@ public class MarkMonitorClientEnrollIdempotencyTests
     }
 
     [Fact]
+    public async Task EnrollCertificateAsync_CalledTwiceWithTheSameCsrAndSubject_DedupeLogIncludesResolvedCARequestID()
+    {
+        // Regression test for https://github.com/Keyfactor/markmonitor-caplugin/issues/7 - the
+        // dedup-hit warning used to be logged before awaiting the in-flight reservation, so it could
+        // never report the CARequestID the caller was actually folded into. It must now be logged
+        // after the reservation resolves, and must include that CARequestID.
+        var capturingFactory = new CapturingLoggerFactory();
+        LogHandler.Factory = capturingFactory;
+
+        var handler = BuildHandler();
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+
+        var first = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
+        var second = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
+
+        Assert.Equal(1, OrderCreationCount(handler));
+        Assert.Equal(first.CARequestID, second.CARequestID);
+
+        var dedupeLog = Assert.Single(capturingFactory.Entries,
+            e => e.Level == LogLevel.Warning && e.Message.Contains("already submitted", StringComparison.Ordinal));
+        Assert.Contains(first.CARequestID, dedupeLog.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>A minimal ILoggerFactory that captures formatted log messages so a test can assert on
+    /// their content, wired up via Keyfactor.Logging's LogHandler.Factory seam (the same seam other
+    /// AnyCA plugins use in tests to point logging somewhere observable).</summary>
+    private sealed class CapturingLoggerFactory : ILoggerFactory
+    {
+        public ConcurrentQueue<(LogLevel Level, string Message)> Entries { get; } = new();
+
+        public ILogger CreateLogger(string categoryName) => new CapturingLogger(Entries);
+        public void AddProvider(ILoggerProvider provider) { }
+        public void Dispose() { }
+
+        private sealed class CapturingLogger(ConcurrentQueue<(LogLevel, string)> entries) : ILogger
+        {
+            IDisposable? ILogger.BeginScope<TState>(TState state) => null;
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                Func<TState, Exception?, string> formatter) =>
+                entries.Enqueue((logLevel, formatter(state, exception)));
+        }
+    }
+
+    [Fact]
     public async Task EnrollCertificateAsync_CalledAgainAfterTheDedupeWindowExpires_CreatesASecondOrder()
     {
         var clock = new ManualTimeProvider { UtcNow = DateTimeOffset.UtcNow };
@@ -97,6 +149,44 @@ public class MarkMonitorClientEnrollIdempotencyTests
         // Give the first call a chance to actually reach (and dispatch) the gated POST /order request
         // before starting the "retry".
         await WaitUntil(() => OrderCreationCount(handler) == 1);
+
+        var secondCall = client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
+
+        orderResponseGate.SetResult();
+        var results = await Task.WhenAll(firstCall, secondCall);
+
+        Assert.Equal(1, OrderCreationCount(handler));
+        Assert.Equal(results[0].CARequestID, results[1].CARequestID);
+    }
+
+    [Fact]
+    public async Task EnrollCertificateAsync_RetriedAfterTheWindowNominallyExpiresButWhileStillGenuinelyInFlight_OnlyCreatesOneOrder()
+    {
+        // A reservation's nominal window (RecentEnrollmentWindow) is stamped when the call starts, not
+        // extended while it runs. If the real work takes longer than that window, a retry arriving
+        // after the nominal expiry - but while the original call is still genuinely in flight - must
+        // still be deduped, not race the still-running original into creating a second real order.
+        var clock = new ManualTimeProvider { UtcNow = DateTimeOffset.UtcNow };
+        var orderResponseGate = new TaskCompletionSource();
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())))
+            .WhenGated(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"), orderResponseGate.Task,
+                FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
+                    SampleOrders.OrderWithCert("11111111-1111-1111-1111-111111111111", "CREATED")));
+        var client = handler.BuildClient(clock);
+        await client.AuthenticateAsync();
+
+        var firstCall = client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
+
+        await WaitUntil(() => OrderCreationCount(handler) == 1);
+
+        // Move well past the 5-minute nominal window while the first call is still gated/in-flight.
+        clock.UtcNow = clock.UtcNow.AddMinutes(6);
 
         var secondCall = client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
             new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());

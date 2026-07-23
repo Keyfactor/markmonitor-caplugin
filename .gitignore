@@ -373,3 +373,12 @@ FodyWeavers.xsd
 TestConsole/Scripts/
 TestConsole/lib/list_real.json
 TestConsole/lib/request.json
+# Claude Code local settings (never commit)
+.claude/
+
+# Jekyll local preview build output/vendored gems (see `just docs-preview`)
+docs/_site/
+docs/.jekyll-cache/
+docs/.bundle/
+docs/vendor/
+docs/Gemfile.lock

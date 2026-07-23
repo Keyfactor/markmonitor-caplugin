@@ -85,4 +85,48 @@ public class MarkMonitorClientEnrollTests
         Assert.NotNull(result);
         Assert.Contains(handler.Requests, req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization?"));
     }
+
+    [Fact]
+    public async Task EnrollCertificateAsync_WhenEccCsrUsesExplicitCurveParameters_ThrowsWithoutSubmittingTheOrder()
+    {
+        // MarkMonitor silently fails an order for an ECC CSR whose key uses explicit curve
+        // parameters instead of a named-curve OID reference (confirmed against a live sandbox: the
+        // order reaches DIGI_FAILED in under a second, with no reason surfaced anywhere in the API).
+        // Reject it at enrollment time with an actionable error instead.
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())));
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+            client.EnrollCertificateAsync(SampleEccCsrs.ExplicitCurvePem, "CN=test.mmcertdomain.com",
+                new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config()));
+
+        Assert.Contains("named curve", ex.Message);
+        Assert.DoesNotContain(handler.Requests, req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"));
+    }
+
+    [Fact]
+    public async Task EnrollCertificateAsync_WhenEccCsrUsesANamedCurve_EnrollsSuccessfully()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())))
+            .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
+                    SampleOrders.OrderWithCert("55555555-5555-5555-5555-555555555555", "CREATED")));
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+
+        var result = await client.EnrollCertificateAsync(SampleEccCsrs.NamedCurvePem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
+
+        Assert.NotNull(result);
+        Assert.Contains(handler.Requests, req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"));
+    }
 }

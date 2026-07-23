@@ -100,7 +100,7 @@ internal abstract class Program
             Console.WriteLine($"Created certificate order: {enrollResult.CARequestID} (status: {enrollResult.Status})");
             orders.Add(enrollResult.CARequestID);
 
-            if (!skipCleanup) await CleanUpOrderAsync(client, enrollResult.CARequestID);
+            if (!skipCleanup) await CleanUpOrderAsync(client, enrollResult.CARequestID, config.OrgName);
         }
 
         Console.WriteLine("Tests completed successfully with orders: " + orders.Count);
@@ -311,18 +311,18 @@ internal abstract class Program
     /// cleanup failure is logged, not thrown - it shouldn't fail the whole test run, but it should
     /// be visible so the order can be cleaned up manually in the MarkMonitor portal.
     /// </summary>
-    private static async Task CleanUpOrderAsync(MarkMonitorClient client, string orderId)
+    private static async Task CleanUpOrderAsync(MarkMonitorClient client, string orderId, string orgName)
     {
         try
         {
-            await client.CancelCertificateAsync(orderId);
+            await client.CancelCertificateAsync(orderId, orgName);
             Console.WriteLine($"Cancelled order {orderId}.");
         }
         catch (Exception cancelEx)
         {
             try
             {
-                await client.RevokeCertificateAsync(orderId);
+                await client.RevokeCertificateAsync(orderId, orgName);
                 Console.WriteLine($"Order {orderId} could not be cancelled ({cancelEx.Message}); revoked it instead.");
             }
             catch (Exception revokeEx)

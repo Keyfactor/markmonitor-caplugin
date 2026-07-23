@@ -112,3 +112,17 @@ cancel-by-name common_name:
     curl -s -X PATCH "$MARKMONITOR_BASE_URL/certs/v1/order/$ORDER_ID/cancel" \
       -H "X-API-KEY: $MARKMONITOR_API_TOKEN" -H "Authorization: Bearer $BEARER" -H "Content-Type: application/json" -d '{}' \
       | jq -r '.status // .'
+
+# Preview the docs/ GitHub Pages site at http://localhost:4000/markmonitor-caplugin/ (needs Docker)
+docs-preview:
+    docker rm -f markmonitor-docs-preview 2>/dev/null || true
+    docker run -d --name markmonitor-docs-preview \
+      -v "{{justfile_directory()}}/docs:/srv/jekyll" \
+      -p 4000:4000 \
+      jekyll/jekyll:latest \
+      bash -c "bundle install && bundle exec jekyll serve --host 0.0.0.0"
+    @echo "Building... tail with 'docker logs -f markmonitor-docs-preview', then open http://localhost:4000/markmonitor-caplugin/"
+
+# Stop the docs preview container started by `just docs-preview`
+docs-preview-stop:
+    docker rm -f markmonitor-docs-preview

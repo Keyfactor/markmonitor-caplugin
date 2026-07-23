@@ -48,6 +48,17 @@ All notable changes to this project will be documented in this file.
   race writes to the shared bearer token and `HttpClient` headers.
 - `GetOrganizationAsync` now rejects a non-GUID org ID before making a request, matching the
   validation already applied to order IDs.
+- `Enroll` now rejects an ECC CSR that uses explicit curve parameters instead of a named curve (e.g.
+  P-256), with an actionable error message. MarkMonitor silently fails such an order almost instantly,
+  with no reason surfaced anywhere in its API.
+- `FetchOrderAsync` (used by `GetSingleRecord` and `Revoke`'s ownership check) no longer re-sets the
+  shared `HttpClient`'s Authorization header itself, unguarded, after calling
+  `EnsureAuthenticatedAsync` - that bypassed the `_authLock` discipline the rest of the client relies
+  on, letting a concurrent `FetchOrderAsync` call (or a concurrent re-authentication) race writes to
+  the shared header ([#8](../../issues/8)).
+- The enrollment dedup-hit log message now reports the resolved `CARequestID` instead of firing before
+  the in-flight reservation resolves, so a dedup hit can actually be correlated with the order it was
+  folded into ([#7](../../issues/7)).
 
 ### Security
 
@@ -60,6 +71,11 @@ All notable changes to this project will be documented in this file.
   dependency.
 - Added `.gitignore` rules for local setup scripts and sandbox test fixtures that carried live-looking
   credentials and org/contact data.
+- Organization name resolution (`ResolveOrganizationAsync`/`ResolveOrganizationIdAsync`) now requires
+  an exact (case-insensitive) name match instead of taking the first result from MarkMonitor's
+  `/certs/v1/organization` name search - a configured org name that happened to be a substring of
+  another org's name could otherwise silently resolve to the wrong organization, undermining the
+  cross-org ownership check in `Revoke` ([#9](../../issues/9)).
 
 ### Added
 

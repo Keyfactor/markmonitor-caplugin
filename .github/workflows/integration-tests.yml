@@ -1,0 +1,39 @@
+name: Integration Tests
+
+# Manual-only: hits the real MarkMonitor sandbox API and creates/cancels real orders. Never runs on
+# push or pull_request. The "markmonitor-integration" environment additionally gates every run
+# behind a required reviewer approval, on top of this workflow_dispatch trigger.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    environment: markmonitor-integration
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Add Keyfactor GitHub Packages NuGet source
+        run: |
+          dotnet nuget add source "https://nuget.pkg.github.com/Keyfactor/index.json" \
+            --name keyfactor-github \
+            --username keyfactor \
+            --password "${{ secrets.V2BUILDTOKEN }}" \
+            --store-password-in-clear-text
+
+      - name: Run live integration tests
+        env:
+          MARKMONITOR_BASE_URL: ${{ secrets.MARKMONITOR_BASE_URL }}
+          MARKMONITOR_API_TOKEN: ${{ secrets.MARKMONITOR_API_TOKEN }}
+          MARKMONITOR_USERNAME: ${{ secrets.MARKMONITOR_USERNAME }}
+          MARKMONITOR_PASSWORD: ${{ secrets.MARKMONITOR_PASSWORD }}
+        run: dotnet test markmonitor-caplugin.IntegrationTests/markmonitor-caplugin.IntegrationTests.csproj --configuration Release --verbosity normal

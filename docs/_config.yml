@@ -1,0 +1,36 @@
+title: MarkMonitor AnyCA Gateway REST Plugin
+description: >-
+  Customer documentation for the Keyfactor MarkMonitor AnyCA Gateway REST plugin — issue,
+  revoke, and synchronize certificates from the MarkMonitor SSL service through Keyfactor Command.
+url: "https://keyfactor.github.io"
+baseurl: "/markmonitor-caplugin"
+
+remote_theme: just-the-docs/just-the-docs
+plugins:
+  - jekyll-remote-theme
+
+color_scheme: keyfactor-dark
+logo: "/assets/images/logo.svg"
+
+mermaid:
+  version: "10.9.1"
+
+search_enabled: true
+heading_anchors: true
+back_to_top: true
+back_to_top_text: "Back to top"
+nav_sort: case_insensitive
+
+aux_links:
+  "Markmonitor-caplugin on GitHub":
+    - "https://github.com/Keyfactor/markmonitor-caplugin"
+aux_links_new_tab: true
+
+footer_content: "Distributed under the Apache License 2.0. Supported by Keyfactor for Keyfactor customers."
+
+defaults:
+  - scope:
+      path: ""
+      type: "pages"
+    values:
+      layout: default

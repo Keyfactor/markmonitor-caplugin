@@ -1,37 +1,4 @@
-<h1 align="center" style="border-bottom: none">
-    Markmonitor AnyCA Gateway REST Plugin
-</h1>
-
-<p align="center">
-  <!-- Badges -->
-<img src="https://img.shields.io/badge/integration_status-pilot-3D1973?style=flat-square" alt="Integration Status: pilot" />
-<a href="https://github.com/Keyfactor/markmonitor-caplugin/releases"><img src="https://img.shields.io/github/v/release/Keyfactor/markmonitor-caplugin?style=flat-square" alt="Release" /></a>
-<img src="https://img.shields.io/github/issues/Keyfactor/markmonitor-caplugin?style=flat-square" alt="Issues" />
-<img src="https://img.shields.io/github/downloads/Keyfactor/markmonitor-caplugin/total?style=flat-square&label=downloads&color=28B905" alt="GitHub Downloads (all assets, all releases)" />
-</p>
-
-<p align="center">
-  <!-- TOC -->
-  <a href="#support">
-    <b>Support</b>
-  </a>
-  ·
-  <a href="#requirements">
-    <b>Requirements</b>
-  </a>
-  ·
-  <a href="#installation">
-    <b>Installation</b>
-  </a>
-  ·
-  <a href="#license">
-    <b>License</b>
-  </a>
-  ·
-  <a href="https://github.com/orgs/Keyfactor/repositories?q=anycagateway">
-    <b>Related Integrations</b>
-  </a>
-</p>
+## Overview
 
 The MarkMonitor AnyCA Gateway REST plugin extends the certificate lifecycle capabilities of the
 MarkMonitor SSL certificate service to Keyfactor Command via the Keyfactor AnyCA Gateway REST. It
@@ -58,15 +25,6 @@ it is not a standalone service. The plugin supports the following capabilities:
 MarkMonitor's SSL API is backed by DigiCert (the only certificate `provider` its API currently
 supports), so issued certificates chain up to DigiCert roots.
 
-## Compatibility
-
-The Markmonitor AnyCA Gateway REST plugin is compatible with the Keyfactor AnyCA Gateway REST 24.2.0 and later.
-
-## Support
-The Markmonitor AnyCA Gateway REST plugin is supported by Keyfactor for Keyfactor customers. If you have a support issue, please open a support ticket via the Keyfactor Support Portal at https://support.keyfactor.com.
-
-> To report a problem or suggest a new feature, use the **[Issues](../../issues)** tab. If you want to contribute actual bug fixes or proposed enhancements, use the **[Pull requests](../../pulls)** tab.
-
 ## Requirements
 
 - A MarkMonitor **API Key** (contact MarkMonitor support to obtain one).
@@ -78,79 +36,6 @@ The Markmonitor AnyCA Gateway REST plugin is supported by Keyfactor for Keyfacto
 - Network connectivity from the AnyCA Gateway host to the MarkMonitor API base URL, and trust of the
   DigiCert issuing CA chain on both the gateway host and the Command server (see
   [Gateway Registration](#gateway-registration)).
-
-## Installation
-
-1. Install the AnyCA Gateway REST per the [official Keyfactor documentation](https://software.keyfactor.com/Guides/AnyCAGatewayREST/Content/AnyCAGatewayREST/InstallIntroduction.htm).
-
-2. On the server hosting the AnyCA Gateway REST, download and unzip the latest [Markmonitor AnyCA Gateway REST plugin](https://github.com/Keyfactor/markmonitor-caplugin/releases/latest) from GitHub.
-
-3. Copy the unzipped directory (usually called `net8.0` or `net10.0`) to the Extensions directory:
-
-
-    ```shell
-    Depending on your AnyCA Gateway REST version, copy the unzipped directory to one of the following locations:
-    Program Files\Keyfactor\AnyCA Gateway\AnyGatewayREST\net8.0\Extensions
-    Program Files\Keyfactor\AnyCA Gateway\AnyGatewayREST\net10.0\Extensions
-    ```
-
-    > The directory containing the Markmonitor AnyCA Gateway REST plugin DLLs (`net8.0` or `net10.0`) can be named anything, as long as it is unique within the `Extensions` directory.
-
-4. Restart the AnyCA Gateway REST service.
-
-5. Navigate to the AnyCA Gateway REST portal and verify that the Gateway recognizes the Markmonitor plugin by hovering over the ⓘ symbol to the right of the Gateway on the top left of the portal.
-
-## Configuration
-
-1. Follow the [official AnyCA Gateway REST documentation](https://software.keyfactor.com/Guides/AnyCAGatewayREST/Content/AnyCAGatewayREST/AddCA-Gateway.htm) to define a new Certificate Authority, and use the notes below to configure the **Gateway Registration** and **CA Connection** tabs:
-
-    * **Gateway Registration**
-
-        In order to enroll for certificates the Keyfactor Command server must trust the issuing CA chain.
-        MarkMonitor's default issuing CA (`provider`) is **DigiCert** — download and import the appropriate
-        certificate chain from <https://www.digicert.com/kb/digicert-root-certificates.htm> to the AnyCA
-        Gateway host and Command server.
-        
-        Once the necessary files are copied to the appropriate locations and the AnyCA Gateway REST is up and
-        running, navigate to the AnyCA Gateway REST portal and configure the CA.
-        
-        ### Using file path for issuing CA certificate
-        ![gateway_registration_local_file.png](docsource/images/gateway_registration_local_file.png)
-        
-        ### Using Keyfactor Command certificate store for issuing CA certificate
-        > **⚠️ Warning:** The cert store must already exist in Keyfactor Command.
-        
-        ![gateway_registration_store.png](docsource/images/gateway_registration_store.png)
-
-    * **CA Connection**
-
-        Populate using the configuration fields collected in the [requirements](#requirements) section.
-
-        * **ApiKey** - The API Key for the MarkMonitor API
-        * **Username** - Username for the MarkMonitor API service account
-        * **Password** - Password for the MarkMonitor API service account
-        * **BaseUrl** - The Base URL for the MarkMonitor API - Usually either https://api.markmonitor.com
-        * **OrgId** - The name of the MarkMonitor Organization to use for the API calls (ex: MarkMonitor). You can also use the Organization ID in GUID format.
-        * **Enabled** - Flag to Enable or Disable gateway functionality. Disabling is primarily used to allow creation of the CA prior to configuration information being available.
-
-2. A certificate template must be created in Keyfactor Command for each MarkMonitor product type you
-want to enroll. One template is required per product type (see [Product IDs](#product-ids)). Below is
-an example of a template for a GeoTrust DV SSL certificate. For more on certificate product types,
-contact your MarkMonitor administrator or support.
-
-![gateway_template.png](docsource/images/gateway_template.png)
-
-3. Follow the [official Keyfactor documentation](https://software.keyfactor.com/Guides/AnyCAGatewayREST/Content/AnyCAGatewayREST/AddCA-Keyfactor.htm) to add each defined Certificate Authority to Keyfactor Command and import the newly defined Certificate Templates.
-
-4. In Keyfactor Command (v12.3+), for each imported Certificate Template, follow the [official documentation](https://software.keyfactor.com/Core-OnPrem/Current/Content/ReferenceGuide/Configuring%20Template%20Options.htm) to define enrollment fields for each of the following parameters:
-
-    * **AdditionalEmails** - List of 0 or more comma separated email addresses to send the certificate to via email after generation.
-    * **MarkmonitorGroup** - The name or GUID of a Markmonitor group to use for the certificate request.
-    * **MarkmonitorContact** - The name or GUID of a Markmonitor contact to use for the certificate request. Will use default Markmonitor organization contact if not specified.
-    * **DCVMethod** - The method to use for Domain Control Validation (DCV). Valid values are EMAIL, DNS_CNAME_TOKEN, HTTP_TOKEN, DNS_TXT_TOKEN. Default is EMAIL.
-    * **comments** - Comments to attach to the MarkMonitor order. Default is "Requested via Keyfactor Command".
-    * **locale** - Locale to use for the MarkMonitor order. Default is "en".
-    * **provider** - The certificate provider to use for the order. Default is "DIGICERT" (currently the only provider MarkMonitor's API supports).
 
 ## MarkMonitor API Setup
 
@@ -164,6 +49,24 @@ MarkMonitor requires **two** credentials that are used together (there is no OAu
 
 Contact your MarkMonitor administrator to provision the API key and a service account with order
 permissions, and to confirm the correct API base URL and organization name/ID for your environment.
+
+## Gateway Registration
+
+In order to enroll for certificates the Keyfactor Command server must trust the issuing CA chain.
+MarkMonitor's default issuing CA (`provider`) is **DigiCert** — download and import the appropriate
+certificate chain from <https://www.digicert.com/kb/digicert-root-certificates.htm> to the AnyCA
+Gateway host and Command server.
+
+Once the necessary files are copied to the appropriate locations and the AnyCA Gateway REST is up and
+running, navigate to the AnyCA Gateway REST portal and configure the CA.
+
+### Using file path for issuing CA certificate
+![gateway_registration_local_file.png](docsource/images/gateway_registration_local_file.png)
+
+### Using Keyfactor Command certificate store for issuing CA certificate
+> **⚠️ Warning:** The cert store must already exist in Keyfactor Command.
+
+![gateway_registration_store.png](docsource/images/gateway_registration_store.png)
 
 ## CA Connection Configuration
 
@@ -184,6 +87,15 @@ must be provided before the connector can be saved in an enabled state.
 
 > **Note:** Credentials are stored in Keyfactor Command's encrypted gateway configuration. `ApiKey`
 > and `Password` are masked in the UI and are never written to logs by the plugin.
+
+## Certificate Template Creation Step
+
+A certificate template must be created in Keyfactor Command for each MarkMonitor product type you
+want to enroll. One template is required per product type (see [Product IDs](#product-ids)). Below is
+an example of a template for a GeoTrust DV SSL certificate. For more on certificate product types,
+contact your MarkMonitor administrator or support.
+
+![gateway_template.png](docsource/images/gateway_template.png)
 
 ## Template Enrollment Parameters
 
@@ -425,11 +337,3 @@ connectivity planning.
 | List organizations | `GET /certs/v1/organization` (paginated) |
 | Get an organization | `GET /certs/v1/organization/{orgId}` |
 | List groups | `GET /auth/v1/group` (paginated) |
-
-## License
-
-Apache License 2.0, see [LICENSE](LICENSE).
-
-## Related Integrations
-
-See all [Keyfactor Any CA Gateways (REST)](https://github.com/orgs/Keyfactor/repositories?q=anycagateway).

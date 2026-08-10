@@ -79,4 +79,49 @@ public class MarkMonitorClientAuthenticateTests
             m => m.Contains("Authentication failed for", StringComparison.Ordinal) &&
                  m.Contains("user", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public async Task AuthenticateAsync_WithASuccessStatusButNoTokenField_LogsAuthenticationFailedForTheUsername()
+    {
+        // Regression test: a well-formed 2xx JSON body simply missing (or empty on) the "token" field
+        // deserializes successfully to a non-null TokenResponse with BearerToken null - the null-body
+        // guard alone didn't catch this, so it used to fall through, set an empty/absent bearer token,
+        // and log "Authentication successful" instead of failing loudly.
+        using var _ = CapturingLoggerFactory.Install(out var capturingFactory);
+
+        var handler = new FakeHttpMessageHandler()
+            .When(req => FakeHttpMessageHandler.Is(req, "POST", "/auth/v1/auth/authenticate"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK, "{}"));
+        var client = handler.BuildClient();
+
+        await Assert.ThrowsAnyAsync<Exception>(() => client.AuthenticateAsync());
+
+        Assert.Contains(capturingFactory.Messages,
+            m => m.Contains("Authentication failed for", StringComparison.Ordinal) &&
+                 m.Contains("user", StringComparison.Ordinal));
+        Assert.DoesNotContain(capturingFactory.Messages,
+            m => m.Contains("Authentication successful", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task AuthenticateAsync_WithMissingConfig_LogsAuthenticationFailedForTheUsername()
+    {
+        // Regression test: ValidateConfiguration()'s throw used to sit outside this method's try/catch
+        // entirely, so a missing ApiKey/Username/Password (e.g. Enabled=true with a blank ApiPassword,
+        // a state the plugin's own config comments explicitly anticipate) produced zero identity-
+        // tagged authentication-failure record from this method - only whichever generic, identity-
+        // less message an enclosing caller's own catch happened to log.
+        using var _ = CapturingLoggerFactory.Install(out var capturingFactory);
+
+        var handler = new FakeHttpMessageHandler();
+        var client = new MarkMonitorClient("https://api.markmonitor.test", "key", "user", "", true, handler);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => client.AuthenticateAsync());
+
+        Assert.Contains(capturingFactory.Messages,
+            m => m.Contains("Authentication failed for", StringComparison.Ordinal) &&
+                 m.Contains("user", StringComparison.Ordinal) &&
+                 m.Contains("Password is required", StringComparison.Ordinal));
+        Assert.Empty(handler.Requests);
+    }
 }

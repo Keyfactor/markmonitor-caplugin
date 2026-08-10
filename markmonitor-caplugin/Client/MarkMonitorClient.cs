@@ -119,90 +119,75 @@ public class MarkMonitorClient : IDisposable
     public async Task AuthenticateAsync(string apiKey = null, string username = null, string password = null)
     {
         _logger.MethodEntry();
-        if (!string.IsNullOrEmpty(apiKey))
-        {
-            _logger.LogDebug("Setting API Key");
-            _apiKey = apiKey;
-        }
-
-        if (!string.IsNullOrEmpty(username))
-        {
-            _logger.LogDebug("Setting username");
-            _username = username;
-        }
-
-        if (!string.IsNullOrEmpty(password))
-        {
-            _logger.LogDebug("Setting password");
-            _password = password;
-        }
-
-        _logger.LogDebug("Calling ValidateConfiguration");
-        var isValid = ValidateConfiguration();
-        if (!isValid) throw new ConfigurationValidationException("Invalid configuration");
-
-        _logger.LogDebug("Setting \"X-API-KEY\" header");
-        _httpClient.DefaultRequestHeaders.Remove("X-API-KEY");
-        _httpClient.DefaultRequestHeaders.Add("X-API-KEY", _apiKey);
-        var requestBody = new TokenRequest
-        {
-            Username = _username,
-            Password = _password
-        };
-
-        var requestUrl = $"{BaseUrl}/auth/v1/auth/authenticate";
-        // Username (unlike ApiKey/Password) is not a secret - the plugin's own config schema marks
-        // it Hidden=false - and is the only field that identifies which MarkMonitor service account
-        // performed a given authentication. Log it so an auditor can reconstruct "who authenticated"
-        // from this component's own logs, including when multiple CA connector instances (each with a
-        // different service account) share one log sink.
-        _logger.LogInformation("Authenticating with MarkMonitor API at {RequestUrl} as {Username}", requestUrl,
-            _username);
-
-        _logger.LogDebug("Sending authentication request");
-        HttpResponseMessage response;
+        // The entire method body is wrapped in one try/catch, below, so ANY failure - missing config,
+        // a transport-level failure, a non-2xx response, or a 2xx response with no usable bearer token
+        // - produces the same single, self-contained, identity-tagged "Authentication failed for
+        // {Username}" record. Earlier versions logged that only from specific branches (the non-2xx
+        // response, or a caught HTTP/parse exception), which left gaps for e.g. a config-validation
+        // failure (thrown before any of those branches even ran) or a well-formed 2xx body missing its
+        // token field (which wouldn't have thrown at all) - each silently skipping this method's own
+        // audit record in favor of a generic, identity-less one from whichever caller's catch received
+        // the exception instead.
         try
         {
-            response = await SendAndLogAsync(() => _httpClient.PostAsync(requestUrl,
+            if (!string.IsNullOrEmpty(apiKey))
+            {
+                _logger.LogDebug("Setting API Key");
+                _apiKey = apiKey;
+            }
+
+            if (!string.IsNullOrEmpty(username))
+            {
+                _logger.LogDebug("Setting username");
+                _username = username;
+            }
+
+            if (!string.IsNullOrEmpty(password))
+            {
+                _logger.LogDebug("Setting password");
+                _password = password;
+            }
+
+            _logger.LogDebug("Calling ValidateConfiguration");
+            var isValid = ValidateConfiguration();
+            if (!isValid) throw new ConfigurationValidationException("Invalid configuration");
+
+            _logger.LogDebug("Setting \"X-API-KEY\" header");
+            _httpClient.DefaultRequestHeaders.Remove("X-API-KEY");
+            _httpClient.DefaultRequestHeaders.Add("X-API-KEY", _apiKey);
+            var requestBody = new TokenRequest
+            {
+                Username = _username,
+                Password = _password
+            };
+
+            var requestUrl = $"{BaseUrl}/auth/v1/auth/authenticate";
+            // Username (unlike ApiKey/Password) is not a secret - the plugin's own config schema marks
+            // it Hidden=false - and is the only field that identifies which MarkMonitor service account
+            // performed a given authentication. Log it so an auditor can reconstruct "who authenticated"
+            // from this component's own logs, including when multiple CA connector instances (each with
+            // a different service account) share one log sink.
+            _logger.LogInformation("Authenticating with MarkMonitor API at {RequestUrl} as {Username}", requestUrl,
+                _username);
+
+            _logger.LogDebug("Sending authentication request");
+            var response = await SendAndLogAsync(() => _httpClient.PostAsync(requestUrl,
                 new StringContent(JsonConvert.SerializeObject(requestBody), Encoding.UTF8, "application/json")),
                 "POST", requestUrl);
-        }
-        catch (Exception e)
-        {
-            // A transport-level failure (unreachable host, timeout, TLS failure) throws before
-            // SendAndLogAsync's send() ever returns a response, so neither of this method's other two
-            // "Authentication failed" log sites (below) ever runs. Log it here too so this case still
-            // produces a self-contained, identity-tagged failure record instead of only a generic,
-            // identity-less log line from whichever caller's own catch block receives the rethrown
-            // exception.
-            _logger.LogError("Authentication failed for {Username}: {EMessage}", _username, e.Message);
-            throw;
-        }
 
-        _logger.LogDebug("Reading authentication response");
-        var content = await response.Content.ReadAsStringAsync();
+            _logger.LogDebug("Reading authentication response");
+            var content = await response.Content.ReadAsStringAsync();
 
-        if (response.IsSuccessStatusCode)
-        {
+            if (!response.IsSuccessStatusCode) throw new Exception(BuildErrorString(content));
+
             _logger.LogDebug("Deserializing token response");
-            TokenResponse tokenResponse;
-            try
-            {
-                tokenResponse = JsonConvert.DeserializeObject<TokenResponse>(content);
-                if (tokenResponse == null)
-                    throw new JsonSerializationException(
-                        "MarkMonitor returned a successful authentication response, but its body was empty or null");
-            }
-            catch (Exception e)
-            {
-                // A 2xx response with an empty/malformed body throws here (JsonReaderException on
-                // malformed JSON) or deserializes to null without throwing (empty/literal-null body,
-                // hence the explicit check above) - neither is caught by anything else in this method,
-                // so without this catch it would surface only as a generic, identity-less error from
-                // an enclosing caller instead of this method's own identity-tagged failure record.
-                _logger.LogError("Authentication failed for {Username}: {EMessage}", _username, e.Message);
-                throw;
-            }
+            var tokenResponse = JsonConvert.DeserializeObject<TokenResponse>(content);
+            if (string.IsNullOrEmpty(tokenResponse?.BearerToken))
+                // Covers a null/unparsable body (tokenResponse itself null) as well as a well-formed
+                // body simply missing/empty the "token" field (tokenResponse non-null, BearerToken
+                // null/empty) - either way, there is no usable bearer token to authenticate with.
+                throw new JsonSerializationException(
+                    "MarkMonitor returned a successful authentication response with no usable bearer token");
 
             _bearerToken = tokenResponse.BearerToken;
             // Subtract a small safety buffer so a request that starts just before expiry doesn't
@@ -211,15 +196,14 @@ public class MarkMonitorClient : IDisposable
             _logger.LogDebug("Bearer token received and valid for {TokenExpiration} seconds",
                 tokenResponse.ExpiresIn);
             _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _bearerToken);
-        }
-        else
-        {
-            var errMsg = BuildErrorString(content);
-            _logger.LogError("Authentication failed for {Username}: {EMessage}", _username, errMsg);
-            throw new Exception(errMsg);
-        }
 
-        _logger.LogInformation("Authentication successful for {Username}", _username);
+            _logger.LogInformation("Authentication successful for {Username}", _username);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError("Authentication failed for {Username}: {EMessage}", _username, e.Message);
+            throw;
+        }
     }
 
     public async Task<int> GetCertificateInventoryAsync(string caId, string sort, int limit,
@@ -1408,11 +1392,25 @@ public class MarkMonitorClient : IDisposable
         string url)
     {
         var stopwatch = Stopwatch.StartNew();
-        var response = await send();
-        stopwatch.Stop();
-        _logger.LogInformation("{Method} {Url} -> {StatusCode} ({ElapsedMs}ms)", method, url,
-            (int)response.StatusCode, stopwatch.ElapsedMilliseconds);
-        return response;
+        try
+        {
+            var response = await send();
+            stopwatch.Stop();
+            _logger.LogInformation("{Method} {Url} -> {StatusCode} ({ElapsedMs}ms)", method, url,
+                (int)response.StatusCode, stopwatch.ElapsedMilliseconds);
+            return response;
+        }
+        catch (Exception e)
+        {
+            // A transport-level failure (timeout, DNS failure, connection refused/reset, TLS failure)
+            // never produces a response at all, so the success path's own log line above never runs -
+            // log the method/URL/elapsed-time here too, so every one of this helper's call sites gets
+            // that context on failure as well, not just success.
+            stopwatch.Stop();
+            _logger.LogError("{Method} {Url} -> failed after {ElapsedMs}ms: {EMessage}", method, url,
+                stopwatch.ElapsedMilliseconds, e.Message);
+            throw;
+        }
     }
 
     private static string BuildErrorString(string jsonString)

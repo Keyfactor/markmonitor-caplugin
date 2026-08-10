@@ -6,6 +6,7 @@ using Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.TestHelpers;
 
 namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.Client;
 
+[Collection(LogHandlerFactoryCollection.Name)]
 public class MarkMonitorClientErrorPropagationTests
 {
     [Fact]
@@ -80,5 +81,29 @@ public class MarkMonitorClientErrorPropagationTests
         var result = await client.ListGroupsAsync(0, 0, "Engineering");
 
         Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task SendAndLogAsync_WhenTheUnderlyingCallFailsBeforeAnyResponse_StillLogsMethodAndUrl()
+    {
+        // Regression test: SendAndLogAsync only logged method/URL/status/elapsed-time after send()
+        // returned successfully - a transport-level failure (timeout, DNS failure, connection refused/
+        // reset, TLS failure) never produces a response at all, so that log line never ran, leaving
+        // only whichever generic, URL-less message an enclosing caller's own catch happened to log.
+        using var _ = CapturingLoggerFactory.Install(out var capturingFactory);
+
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .WhenAsync(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                _ => Task.FromException<HttpResponseMessage>(new HttpRequestException("Simulated connection reset")));
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.ListOrganizationsAsync());
+
+        Assert.Contains(capturingFactory.Messages,
+            m => m.Contains("GET", StringComparison.Ordinal) &&
+                 m.Contains("/certs/v1/organization", StringComparison.Ordinal) &&
+                 m.Contains("failed", StringComparison.OrdinalIgnoreCase));
     }
 }

@@ -64,24 +64,33 @@ public class MarkMonitorClientEnrollIdempotencyTests
         // dedup-hit warning used to be logged before awaiting the in-flight reservation, so it could
         // never report the CARequestID the caller was actually folded into. It must now be logged
         // after the reservation resolves, and must include that CARequestID.
+        // This test's capturing factory needs (LogLevel, Message) pairs to filter to the Warning-level
+        // dedupe log specifically - TestHelpers.CapturingLoggerFactory.Install() only captures message
+        // text, so this uses its own nested factory below and restores LogHandler.Factory itself.
         var capturingFactory = new CapturingLoggerFactory();
         LogHandler.Factory = capturingFactory;
+        try
+        {
+            var handler = BuildHandler();
+            var client = handler.BuildClient();
+            await client.AuthenticateAsync();
 
-        var handler = BuildHandler();
-        var client = handler.BuildClient();
-        await client.AuthenticateAsync();
+            var first = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+                new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
+            var second = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+                new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
 
-        var first = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
-            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
-        var second = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
-            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
+            Assert.Equal(1, OrderCreationCount(handler));
+            Assert.Equal(first.CARequestID, second.CARequestID);
 
-        Assert.Equal(1, OrderCreationCount(handler));
-        Assert.Equal(first.CARequestID, second.CARequestID);
-
-        var dedupeLog = Assert.Single(capturingFactory.Entries,
-            e => e.Level == LogLevel.Warning && e.Message.Contains("already submitted", StringComparison.Ordinal));
-        Assert.Contains(first.CARequestID, dedupeLog.Message, StringComparison.Ordinal);
+            var dedupeLog = Assert.Single(capturingFactory.Entries,
+                e => e.Level == LogLevel.Warning && e.Message.Contains("already submitted", StringComparison.Ordinal));
+            Assert.Contains(first.CARequestID, dedupeLog.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            LogHandler.Factory = new Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory();
+        }
     }
 
     /// <summary>A minimal ILoggerFactory that captures formatted log messages so a test can assert on

@@ -122,4 +122,32 @@ public class MarkMonitorClientOrgResolutionTests
 
         Assert.DoesNotContain(handler.Requests, r => FakeHttpMessageHandler.Is(r, "PATCH", "/revoke"));
     }
+
+    [Fact]
+    public async Task EnrollCertificateAsync_ResolvingOrgByName_RequestsAPageSizeLargeEnoughToAvoidOneRoundTripPerMatch()
+    {
+        // Regression test: ResolveOrganizationAsync/ResolveOrganizationIdAsync used to hard-code a
+        // page size of 1 for the org-name search. Since MarkMonitor's name filter can return several
+        // fuzzy matches for one configured name, that forced one sequential HTTP round-trip per
+        // matching org just to page through them all before the exact-match filter (above) ever ran.
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK, SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())))
+            .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
+                    SampleOrders.OrderWithCert("44444444-4444-4444-4444-444444444444", "CREATED")));
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+
+        await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(),
+            SampleConfig.Default());
+
+        var orgRequest = Assert.Single(handler.Requests,
+            req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"));
+        var query = orgRequest.RequestUri!.Query;
+        Assert.Contains("size=100", query);
+        Assert.DoesNotContain("size=1&", query);
+    }
 }

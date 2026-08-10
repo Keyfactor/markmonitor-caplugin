@@ -71,4 +71,42 @@ public class MarkMonitorClientInventoryTests
         // The gated (never-released) second page must not have been allowed to complete the sync.
         Assert.False(page2Gate.Task.IsCompleted);
     }
+
+    [Fact]
+    public async Task GetCertificateInventoryAsync_WithMultiplePages_AddsEachPageToTheBufferAsItArrivesRatherThanWaitingForAllPages()
+    {
+        // Regression test: ListCertificateOrdersAsync used to accumulate every page's orders into one
+        // in-memory list before ever returning, so GetCertificateInventoryAsync's buffer-writing loop
+        // saw zero throughput until the entire (potentially huge) order history had downloaded. Page 1
+        // must reach the buffer before page 2's gated fetch is ever released.
+        var page2Gate = new TaskCompletionSource();
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrders.OrdersPage(SampleOrders.OrderWithCert(
+                        "77777777-7777-7777-7777-777777777777", "DIGI_ISSUED"), totalPages: 2)))
+            .WhenGated(req => FakeHttpMessageHandler.Is(req, "GET", "page=1"), page2Gate.Task,
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrders.OrdersPage(SampleOrders.OrderWithCert(
+                        "88888888-8888-8888-8888-888888888888", "DIGI_ISSUED"), totalPages: 2)));
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+        var buffer = new BlockingCollection<AnyCAPluginCertificate>();
+
+        var syncTask = client.GetCertificateInventoryAsync("", "", 100, buffer, CancellationToken.None);
+
+        // Page 1's certificate must already be in the buffer while page 2 is still gated/pending -
+        // proving the buffer is fed page-by-page, not only after the whole order history downloads.
+        var firstFromBuffer = buffer.Take(new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
+        Assert.Equal("77777777-7777-7777-7777-777777777777", firstFromBuffer.CARequestID);
+        Assert.False(page2Gate.Task.IsCompleted);
+
+        page2Gate.SetResult();
+        var count = await syncTask;
+
+        Assert.Equal(2, count);
+        var second = buffer.Take(new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
+        Assert.Equal("88888888-8888-8888-8888-888888888888", second.CARequestID);
+    }
 }

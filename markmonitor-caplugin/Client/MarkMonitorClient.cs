@@ -169,74 +169,79 @@ public class MarkMonitorClient : IDisposable
         BlockingCollection<AnyCAPluginCertificate> certificatesBuffer, CancellationToken cancelToken)
     {
         _logger.MethodEntry();
+        var numberOfCertificates = 0;
         try
         {
             await EnsureAuthenticatedAsync();
             _logger.LogInformation("Retrieving certificate inventory from MarkMonitor");
-            var certificateOrders =
-                await ListCertificateOrdersAsync(0, caId, sort, limit, cancelToken); //todo: providerId support???
-            _logger.LogDebug("Retrieved '{CertificateCount}' certificate orders", certificateOrders.Count);
-
-            var numberOfCertificates = 0;
-            foreach (var certificateDetail in certificateOrders)
+            // Stream each page straight into certificatesBuffer as it arrives, via onPageReceived,
+            // instead of letting ListCertificateOrdersAsync accumulate every page for the whole order
+            // history into one in-memory list before this method ever touches the buffer - for a
+            // large/long-lived org that meant unbounded peak memory and zero buffer throughput until
+            // the entire (possibly huge) order history had downloaded.
+            await ListCertificateOrdersAsync(0, caId, sort, limit, cancelToken, page =>
             {
-                _logger.LogInformation("Adding certificate {CertificateId} to buffer", certificateDetail.Id);
+                _logger.LogDebug("Retrieved a page of '{CertificateCount}' certificate orders", page.Count);
+                foreach (var certificateDetail in page)
+                {
+                    _logger.LogInformation("Adding certificate {CertificateId} to buffer", certificateDetail.Id);
 
-                if (certificateDetail.Cert == null)
-                {
-                    _logger.LogWarning(
-                        "Certificate {CertificateId} has no cert details yet (status {Status}) - skipping it for this sync rather than aborting the rest of the page",
-                        certificateDetail.Id, certificateDetail.Status);
-                    continue;
-                }
-
-                var certStatus = MarkMonitorCertificateStatusToCAStatus(certificateDetail);
-                _logger.LogTrace("Certificate {CertificateId} status: {CertificateStatus}", certificateDetail.Id,
-                    certStatus);
-
-                _logger.LogDebug("Converting certificate {CertificateId} revocation status {Status}",
-                    certificateDetail.Id, certificateDetail.Cert.RevokeStatus);
-                DateTime? revocationDate = null;
-                if (certificateDetail.Cert.RevokeStatus == "REVOKED")
-                {
-                    _logger.LogDebug("Certificate {CertificateId} is revoked", certificateDetail.Id);
-                    revocationDate = Convert.ToDateTime(certificateDetail.Cert.DateValidUntil);
-                }
-                
-                var fullChain = new StringBuilder();
-                if (certificateDetail.Cert.EndEntityCert != null)
-                {
-                    _logger.LogDebug("Adding end entity certificate to full chain for {CertificateId}",
-                        certificateDetail.Id);
-                    fullChain.AppendLine(certificateDetail.Cert.EndEntityCert);
-                }
-                if (certificateDetail.Cert.IntermediateCert != null)
-                {
-                    _logger.LogDebug("Adding issuer certificate to full chain for {CertificateId}",
-                        certificateDetail.Id);
-                    fullChain.AppendLine(certificateDetail.Cert.IntermediateCert);
-                }
-                if (certificateDetail.Cert.RootCert != null)
-                {
-                    _logger.LogDebug("Adding root certificate to full chain for {CertificateId}",
-                        certificateDetail.Id);
-                    fullChain.AppendLine(certificateDetail.Cert.RootCert);
-                }
-
-                certificatesBuffer.Add(
-                    new AnyCAPluginCertificate
+                    if (certificateDetail.Cert == null)
                     {
-                        CARequestID = certificateDetail.Id,
-                        Status = certStatus,
-                        Certificate = fullChain.ToString(),
-                        CSR = certificateDetail.Cert.Csr,
-                        ProductID = certificateDetail.CertType,
-                        RevocationDate = revocationDate,
-                        // RevocationReason = certificateDetail.Cert.RevokeStatus, // TODO: Not available in MarkMonitor API
-                    }, cancelToken);
-                numberOfCertificates++;
-                _logger.LogTrace("Total certificates added to buffer: {NumberOfCertificates}", numberOfCertificates);
-            }
+                        _logger.LogWarning(
+                            "Certificate {CertificateId} has no cert details yet (status {Status}) - skipping it for this sync rather than aborting the rest of the page",
+                            certificateDetail.Id, certificateDetail.Status);
+                        continue;
+                    }
+
+                    var certStatus = MarkMonitorCertificateStatusToCAStatus(certificateDetail);
+                    _logger.LogTrace("Certificate {CertificateId} status: {CertificateStatus}", certificateDetail.Id,
+                        certStatus);
+
+                    _logger.LogDebug("Converting certificate {CertificateId} revocation status {Status}",
+                        certificateDetail.Id, certificateDetail.Cert.RevokeStatus);
+                    DateTime? revocationDate = null;
+                    if (certificateDetail.Cert.RevokeStatus == "REVOKED")
+                    {
+                        _logger.LogDebug("Certificate {CertificateId} is revoked", certificateDetail.Id);
+                        revocationDate = Convert.ToDateTime(certificateDetail.Cert.DateValidUntil);
+                    }
+
+                    var fullChain = new StringBuilder();
+                    if (certificateDetail.Cert.EndEntityCert != null)
+                    {
+                        _logger.LogDebug("Adding end entity certificate to full chain for {CertificateId}",
+                            certificateDetail.Id);
+                        fullChain.AppendLine(certificateDetail.Cert.EndEntityCert);
+                    }
+                    if (certificateDetail.Cert.IntermediateCert != null)
+                    {
+                        _logger.LogDebug("Adding issuer certificate to full chain for {CertificateId}",
+                            certificateDetail.Id);
+                        fullChain.AppendLine(certificateDetail.Cert.IntermediateCert);
+                    }
+                    if (certificateDetail.Cert.RootCert != null)
+                    {
+                        _logger.LogDebug("Adding root certificate to full chain for {CertificateId}",
+                            certificateDetail.Id);
+                        fullChain.AppendLine(certificateDetail.Cert.RootCert);
+                    }
+
+                    certificatesBuffer.Add(
+                        new AnyCAPluginCertificate
+                        {
+                            CARequestID = certificateDetail.Id,
+                            Status = certStatus,
+                            Certificate = fullChain.ToString(),
+                            CSR = certificateDetail.Cert.Csr,
+                            ProductID = certificateDetail.CertType,
+                            RevocationDate = revocationDate,
+                            // RevocationReason = certificateDetail.Cert.RevokeStatus, // TODO: Not available in MarkMonitor API
+                        }, cancelToken);
+                    numberOfCertificates++;
+                    _logger.LogTrace("Total certificates added to buffer: {NumberOfCertificates}", numberOfCertificates);
+                }
+            });
 
             _logger.LogInformation("Retrieved {NumberOfCertificates} certificates", numberOfCertificates);
             return numberOfCertificates;
@@ -285,12 +290,18 @@ public class MarkMonitorClient : IDisposable
         return query;
     }
 
+    /// <summary>Fetches every page of matching certificate orders. When <paramref name="onPageReceived"/>
+    /// is supplied, each page is handed to it as soon as it arrives and is not also accumulated into
+    /// the returned list (which is then null) - lets a caller with a large result set (e.g. a full
+    /// inventory sync) process/forward orders page-by-page instead of holding the entire result set
+    /// in memory and seeing zero progress until every page has downloaded. Omit it to get the
+    /// original all-pages-in-one-list behavior every other caller relies on.</summary>
     public async Task<List<OrderContent>> ListCertificateOrdersAsync(int providerId, string orgId, string sort,
-        int limit, CancellationToken cancelToken = default)
+        int limit, CancellationToken cancelToken = default, Action<List<OrderContent>> onPageReceived = null)
     {
         _logger.MethodEntry();
         await EnsureAuthenticatedAsync();
-        var output = new List<OrderContent>();
+        var output = onPageReceived == null ? new List<OrderContent>() : null;
         try
         {
             _logger.LogInformation("Retrieving certificate orders from MarkMonitor");
@@ -321,7 +332,10 @@ public class MarkMonitorClient : IDisposable
 
                 _logger.LogDebug("Deserializing response content to MarkMonitorListOrdersResponse");
                 var certificateListResponse = JsonConvert.DeserializeObject<MarkMonitorListOrdersResponse>(content);
-                output.AddRange(certificateListResponse.Content);
+                if (onPageReceived != null)
+                    onPageReceived(certificateListResponse.Content);
+                else
+                    output.AddRange(certificateListResponse.Content);
                 currentPage++;
                 allPagesDownloaded = currentPage >= certificateListResponse.MarkMonitorPage.TotalPages;
             } while (!allPagesDownloaded);
@@ -506,7 +520,11 @@ public class MarkMonitorClient : IDisposable
     private async Task<string> ResolveOrganizationIdAsync(string orgNameOrId)
     {
         if (Guid.TryParse(orgNameOrId, out _)) return orgNameOrId;
-        var orgs = await ListOrganizationsAsync(0, 1, orgNameOrId);
+        // A page size of 100 (not 1) here: MarkMonitor's name filter can return several fuzzy
+        // matches for one configured name, and a page size of 1 would force one sequential HTTP
+        // round-trip per match just to page through them all before the exact-match filter below
+        // ever runs - this fetches all of them in one request instead.
+        var orgs = await ListOrganizationsAsync(0, 100, orgNameOrId);
         // MarkMonitor's own name filter may do substring/fuzzy matching rather than exact matching,
         // so filter to an exact (case-insensitive) name match ourselves rather than trusting the
         // first result - otherwise a configured name that's a substring of another org's name (e.g.
@@ -895,7 +913,8 @@ public class MarkMonitorClient : IDisposable
         }
         else
         {
-            var orgs = await ListOrganizationsAsync(0, 1, orgNameOrId);
+            // Page size 100, not 1 - see ResolveOrganizationIdAsync's comment on the same call.
+            var orgs = await ListOrganizationsAsync(0, 100, orgNameOrId);
             _logger.LogTrace("Organizations found: {@Orgs}", orgs);
             // ListOrganizationsAsync throws rather than returning null on error, so orgs is never
             // null here - just possibly empty. MarkMonitor's own name filter may do substring/fuzzy
@@ -973,7 +992,7 @@ public class MarkMonitorClient : IDisposable
 
             _logger.LogWarning(
                 "MarkMonitor contact '{ContactParam}' could not be resolved; falling back to the default organization contact",
-                contactParam);
+                LogSanitizer.ForLog(contactParam));
         }
 
         return contacts.FirstOrDefault(c =>

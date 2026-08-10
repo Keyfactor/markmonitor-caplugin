@@ -103,4 +103,35 @@ public class MarkMonitorClientRevokeTests
 
         Assert.True(result);
     }
+
+    [Fact]
+    public async Task RevokeCertificateAsync_CalledTwiceWithTheSameOrgName_OnlyResolvesTheOrganizationOnce()
+    {
+        // Regression test: resolving OrgName by friendly name used to make a fresh MarkMonitor API
+        // call on every single Revoke/Cancel call, even though the configured value is invariant for
+        // the connector's (and this cached client's) lifetime - real cost at bulk-revocation scale.
+        // A resolved org GUID is now cached for this client's lifetime.
+        const string firstOrderId = "11111111-1111-1111-1111-111111111111";
+        const string secondOrderId = "22222222-2222-2222-2222-222222222222";
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())))
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", $"/certs/v1/order/{firstOrderId}"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrders.OrderWithCert(firstOrderId, "DIGI_ISSUED")))
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", $"/certs/v1/order/{secondOrderId}"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrders.OrderWithCert(secondOrderId, "DIGI_ISSUED")))
+            .When(req => FakeHttpMessageHandler.Is(req, "PATCH", "/revoke"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK, "{}"));
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+
+        await client.RevokeCertificateAsync(firstOrderId, "Test Org");
+        await client.RevokeCertificateAsync(secondOrderId, "Test Org");
+
+        Assert.Single(handler.Requests, r => FakeHttpMessageHandler.Is(r, "GET", "/certs/v1/organization"));
+    }
 }

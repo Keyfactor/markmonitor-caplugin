@@ -4,6 +4,7 @@ using Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.TestHelpers;
 
 namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.Client;
 
+[Collection(LogHandlerFactoryCollection.Name)]
 public class MarkMonitorClientAuthenticateTests
 {
     [Fact]
@@ -55,5 +56,27 @@ public class MarkMonitorClientAuthenticateTests
         var apiKeyValues = lastRequest.Headers.GetValues("X-API-KEY").ToList();
         Assert.Single(apiKeyValues);
         Assert.Equal("key", apiKeyValues[0]);
+    }
+
+    [Fact]
+    public async Task AuthenticateAsync_WithASuccessStatusButAnEmptyBody_LogsAuthenticationFailedForTheUsername()
+    {
+        // Regression test: a 2xx response whose body is empty/malformed deserializes to null (or
+        // throws on malformed JSON) without ever reaching the else-branch's own "Authentication
+        // failed" log - neither of AuthenticateAsync's other two failure-logging sites covered this
+        // case, so it used to surface only as a generic, identity-less error from whichever caller's
+        // catch block received the exception instead of this method's own identity-tagged record.
+        using var _ = CapturingLoggerFactory.Install(out var capturingFactory);
+
+        var handler = new FakeHttpMessageHandler()
+            .When(req => FakeHttpMessageHandler.Is(req, "POST", "/auth/v1/auth/authenticate"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK, "null"));
+        var client = handler.BuildClient();
+
+        await Assert.ThrowsAnyAsync<Exception>(() => client.AuthenticateAsync());
+
+        Assert.Contains(capturingFactory.Messages,
+            m => m.Contains("Authentication failed for", StringComparison.Ordinal) &&
+                 m.Contains("user", StringComparison.Ordinal));
     }
 }

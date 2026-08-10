@@ -357,6 +357,41 @@ public class MarkMonitorClientEnrollIdempotencyTests
         Assert.Equal(1, OrderCreationCount(handler));
     }
 
+    [Fact]
+    public async Task
+        EnrollCertificateAsync_WhenTheTokenExpiresDuringOrgResolutionAndTheNestedReAuthFails_EvictsTheReservation()
+    {
+        // Regression test: reachedCreateOrderCall used to be set immediately before calling
+        // CreateCertificateOrder, but CreateCertificateOrder itself runs its own EnsureAuthenticatedAsync
+        // check before ever sending the order-create POST. If the token expired again during org/
+        // contact/group resolution (a slow lookup against a large account), that nested re-auth
+        // attempt's own failure was misclassified as "ambiguous, order might exist" even though the
+        // order-create POST was never reached - keeping a dedup reservation active for the rest of the
+        // window and locking out a retry that would otherwise succeed immediately.
+        var clock = new ManualTimeProvider { UtcNow = DateTimeOffset.UtcNow };
+        var handler = new FakeHttpMessageHandler()
+            .WhenAsync(req => FakeHttpMessageHandler.Is(req, "POST", "/auth/v1/auth/authenticate"),
+                _ => Task.FromResult(FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    """{"token":"fake-token","expiresIn":60}""")),
+                _ => Task.FromException<HttpResponseMessage>(new HttpRequestException("Simulated connection reset")))
+            .WhenAsync(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"), _ =>
+            {
+                clock.UtcNow = clock.UtcNow.AddSeconds(100); // Expire the token while "resolving" the org.
+                return Task.FromResult(FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())));
+            });
+        var client = handler.BuildClient(clock);
+        await client.AuthenticateAsync();
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.EnrollCertificateAsync(SampleCsr.Pem,
+            "CN=test.mmcertdomain.com", new Dictionary<string, string[]>(), "SslDvGeotrust",
+            new Dictionary<string, string>(), Config()));
+
+        // The failure happened before the order-create POST was ever reached, so the dedup reservation
+        // must have been evicted immediately, not kept "ambiguous" for the rest of the window.
+        Assert.Equal(0, client.RecentEnrollmentsCount);
+    }
+
     private static async Task WaitUntil(Func<bool> condition)
     {
         var deadline = DateTime.UtcNow.AddSeconds(5);

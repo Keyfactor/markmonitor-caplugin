@@ -243,6 +243,10 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
     {
         var priorCertSn = productInfo.ProductParameters?
             .FirstOrDefault(kv => string.Equals(kv.Key, "PriorCertSN", StringComparison.OrdinalIgnoreCase)).Value;
+        // PriorCertSN is a caller-supplied enrollment product parameter - log a CR/LF-escaped copy so
+        // an embedded CR/LF can't forge a fake log line (CWE-117), matching every other caller-supplied
+        // value in this file.
+        var logSafePriorCertSn = LogSanitizer.ForLog(priorCertSn);
 
         if (string.IsNullOrWhiteSpace(priorCertSn))
         {
@@ -257,7 +261,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         {
             _logger.LogWarning(
                 "Could not resolve a CARequestID for PriorCertSN {PriorCertSn} - the prior certificate will not be revoked",
-                priorCertSn);
+                logSafePriorCertSn);
             return;
         }
 
@@ -267,7 +271,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
 
             _logger.LogInformation(
                 "Revoking prior certificate {PriorRequestId} (serial {PriorCertSn}) after it was replaced by {NewCaRequestId}",
-                priorRequestId, priorCertSn, newCaRequestId);
+                priorRequestId, logSafePriorCertSn, newCaRequestId);
             await client.RevokeCertificateAsync(priorRequestId, _config.OrgName);
         }
         catch (Exception e)

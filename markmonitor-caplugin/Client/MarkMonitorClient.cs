@@ -49,6 +49,17 @@ public class MarkMonitorClient : IDisposable
     /// rather than accumulating one permanent entry per successful enrollment.</summary>
     internal int RecentEnrollmentsCount => _recentEnrollments.Count;
 
+    // A resolved organization/group GUID never changes for a given name - MarkMonitor doesn't let a
+    // name be reassigned to a different org/group ID - so it's safe to cache indefinitely for this
+    // client's lifetime (which is itself cached for the whole plugin instance's lifetime). Without
+    // this, every single Enroll/Revoke/Cancel call re-resolved the configured OrgName (and, for
+    // enrollment, a named MarkmonitorGroup) via a fresh MarkMonitor API call, even though the
+    // configured value is invariant for the connector's lifetime - real cost at bulk-operation scale
+    // (e.g. a CRL/lifecycle sweep revoking thousands of certs). A "not found" result (null) is
+    // deliberately NOT cached, since an org/group that doesn't exist yet could be created later.
+    private readonly ConcurrentDictionary<string, string> _resolvedOrgIdByName = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, Guid> _resolvedGroupIdByName = new(StringComparer.OrdinalIgnoreCase);
+
     public MarkMonitorClient(string baseUrl, string apiKey, string username, string password, bool validateSsl = true,
         HttpMessageHandler handler = null, TimeProvider timeProvider = null)
     {
@@ -159,11 +170,11 @@ public class MarkMonitorClient : IDisposable
         catch (Exception e)
         {
             // A transport-level failure (unreachable host, timeout, TLS failure) throws before
-            // SendAndLogAsync's send() ever returns a response, so the IsSuccessStatusCode branch
-            // below - the only other place this method logs "Authentication failed" - never runs.
-            // Log it here too so this case still produces a self-contained, identity-tagged failure
-            // record instead of only a generic, identity-less log line from whichever caller's own
-            // catch block happens to receive the rethrown exception.
+            // SendAndLogAsync's send() ever returns a response, so neither of this method's other two
+            // "Authentication failed" log sites (below) ever runs. Log it here too so this case still
+            // produces a self-contained, identity-tagged failure record instead of only a generic,
+            // identity-less log line from whichever caller's own catch block receives the rethrown
+            // exception.
             _logger.LogError("Authentication failed for {Username}: {EMessage}", _username, e.Message);
             throw;
         }
@@ -174,7 +185,25 @@ public class MarkMonitorClient : IDisposable
         if (response.IsSuccessStatusCode)
         {
             _logger.LogDebug("Deserializing token response");
-            var tokenResponse = JsonConvert.DeserializeObject<TokenResponse>(content);
+            TokenResponse tokenResponse;
+            try
+            {
+                tokenResponse = JsonConvert.DeserializeObject<TokenResponse>(content);
+                if (tokenResponse == null)
+                    throw new JsonSerializationException(
+                        "MarkMonitor returned a successful authentication response, but its body was empty or null");
+            }
+            catch (Exception e)
+            {
+                // A 2xx response with an empty/malformed body throws here (JsonReaderException on
+                // malformed JSON) or deserializes to null without throwing (empty/literal-null body,
+                // hence the explicit check above) - neither is caught by anything else in this method,
+                // so without this catch it would surface only as a generic, identity-less error from
+                // an enclosing caller instead of this method's own identity-tagged failure record.
+                _logger.LogError("Authentication failed for {Username}: {EMessage}", _username, e.Message);
+                throw;
+            }
+
             _bearerToken = tokenResponse.BearerToken;
             // Subtract a small safety buffer so a request that starts just before expiry doesn't
             // race the token dying mid-flight.
@@ -548,6 +577,8 @@ public class MarkMonitorClient : IDisposable
     private async Task<string> ResolveOrganizationIdAsync(string orgNameOrId)
     {
         if (Guid.TryParse(orgNameOrId, out _)) return orgNameOrId;
+        if (_resolvedOrgIdByName.TryGetValue(orgNameOrId, out var cachedOrgId)) return cachedOrgId;
+
         // A page size of 100 (not 1) here: MarkMonitor's name filter can return several fuzzy
         // matches for one configured name, and a page size of 1 would force one sequential HTTP
         // round-trip per match just to page through them all before the exact-match filter below
@@ -558,7 +589,10 @@ public class MarkMonitorClient : IDisposable
         // first result - otherwise a configured name that's a substring of another org's name (e.g.
         // "Acme" vs "Acme Corp Europe") could silently resolve to the wrong organization, which would
         // undermine the cross-org ownership check in RevokeCertificateAsync.
-        return orgs.FirstOrDefault(o => string.Equals(o.Name, orgNameOrId, StringComparison.OrdinalIgnoreCase))?.Id;
+        var resolvedOrgId =
+            orgs.FirstOrDefault(o => string.Equals(o.Name, orgNameOrId, StringComparison.OrdinalIgnoreCase))?.Id;
+        if (resolvedOrgId != null) _resolvedOrgIdByName[orgNameOrId] = resolvedOrgId;
+        return resolvedOrgId;
     }
 
     /// <summary>
@@ -594,8 +628,14 @@ public class MarkMonitorClient : IDisposable
             return;
         }
 
-        var expectedOrgId = await ResolveOrganizationIdAsync(orgName);
-        var order = await FetchOrderAsync(orderId);
+        // Independent lookups (one depends only on orgName, the other only on orderId) - run them
+        // concurrently rather than one after another. Both internally call EnsureAuthenticatedAsync,
+        // which is safe under concurrent access (see its own comment on _authLock).
+        var expectedOrgIdTask = ResolveOrganizationIdAsync(orgName);
+        var orderTask = FetchOrderAsync(orderId);
+        await Task.WhenAll(expectedOrgIdTask, orderTask);
+        var expectedOrgId = expectedOrgIdTask.Result;
+        var order = orderTask.Result;
         // Comparing as parsed Guids, not raw strings: Guid.TryParse accepts several textual
         // formats (braces, no dashes, etc.), so an admin-configured OrgId in a non-canonical
         // format must still match MarkMonitor's own canonical serialization of the same GUID.
@@ -884,7 +924,15 @@ public class MarkMonitorClient : IDisposable
 
 
             _logger.LogDebug("Calling CreateCertificateOrder");
-            logCreateOrderRequest(certOrder);
+            // Force any needed re-authentication here, BEFORE reachedCreateOrderCall is set.
+            // CreateCertificateOrder performs its own EnsureAuthenticatedAsync check internally (every
+            // MarkMonitorClient method does), and if the token happened to expire again during the
+            // org/contact/group resolution above, a failure in THAT nested re-auth call must not be
+            // treated as ambiguous - the order-create POST itself was never reached - but
+            // reachedCreateOrderCall wouldn't otherwise distinguish that from a failure during the
+            // POST. Doing the check here first means CreateCertificateOrder's own check is always a
+            // no-op immediately afterward.
+            await EnsureAuthenticatedAsync();
             reachedCreateOrderCall = true;
             var order = await CreateCertificateOrder(certOrder);
 
@@ -993,13 +1041,20 @@ public class MarkMonitorClient : IDisposable
 
         if (Guid.TryParse(groupParam, out var parsedGroupId)) return parsedGroupId;
 
+        if (_resolvedGroupIdByName.TryGetValue(groupParam, out var cachedGroupId)) return cachedGroupId;
+
         // Page size 100, not 0 (server default) - see ResolveOrganizationIdAsync's comment on the
         // identical fuzzy-match, filter-by-exact-name pattern: a small page size costs one sequential
         // HTTP round-trip per fuzzy match instead of one round-trip total.
         var groups = await ListGroupsAsync(0, 100, groupParam);
         var matchedGroup = groups?.FirstOrDefault(g =>
             string.Equals(g.Name, groupParam, StringComparison.OrdinalIgnoreCase));
-        if (matchedGroup != null) return Guid.Parse(matchedGroup.Id);
+        if (matchedGroup != null)
+        {
+            var resolvedGroupId = Guid.Parse(matchedGroup.Id);
+            _resolvedGroupIdByName[groupParam] = resolvedGroupId;
+            return resolvedGroupId;
+        }
 
         _logger.LogWarning("MarkMonitor group '{GroupParam}' could not be resolved to an ID",
             LogSanitizer.ForLog(groupParam));

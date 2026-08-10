@@ -109,4 +109,39 @@ public class MarkMonitorClientEnrollLoggingTests
         var groupRequest = Assert.Single(handler.Requests, req => FakeHttpMessageHandler.Is(req, "GET", "/auth/v1/group"));
         Assert.Contains("size=100", groupRequest.RequestUri!.Query);
     }
+
+    [Fact]
+    public async Task EnrollCertificateAsync_CalledTwiceWithTheSameGroupName_OnlyResolvesTheGroupOnce()
+    {
+        // Regression test: resolving a named MarkmonitorGroup used to make a fresh MarkMonitor API
+        // call on every single enrollment, even though a resolved group name never maps to a
+        // different GUID later - a real cost at steady enrollment volume. A resolved group GUID is
+        // now cached for this client's lifetime.
+        const string groupId = "44444444-4444-4444-4444-444444444444";
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())))
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/auth/v1/group"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    $$"""{"groups":[{"id":"{{groupId}}","name":"some-group"}],"page":{"totalPages": 1} }"""))
+            .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
+                    SampleOrders.OrderWithCert("55555555-5555-5555-5555-555555555555", "CREATED")));
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+
+        var productParams = new Dictionary<string, string>
+        {
+            [MarkMonitorCAPluginConfig.EnrollmentConfigConstants.MarkmonitorGroup] = "some-group"
+        };
+
+        await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test1.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", productParams, SampleConfig.Default());
+        await client.EnrollCertificateAsync(SampleCsr2.Pem, "CN=test2.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", productParams, SampleConfig.Default());
+
+        Assert.Single(handler.Requests, req => FakeHttpMessageHandler.Is(req, "GET", "/auth/v1/group"));
+    }
 }

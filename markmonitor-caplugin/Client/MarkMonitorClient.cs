@@ -667,9 +667,16 @@ public class MarkMonitorClient : IDisposable
     {
         foreach (var entry in _recentEnrollments)
             if (!IsReservationStillActive(entry.Value, now))
-                ((ICollection<KeyValuePair<string, (DateTime, TaskCompletionSource<EnrollmentResult>)>>)_recentEnrollments)
-                    .Remove(entry);
+                TryRemoveReservation(entry.Key, entry.Value);
     }
+
+    // ConcurrentDictionary's own Remove(key) doesn't check the value, so it can delete a different
+    // caller's reservation that has since replaced the one this call actually owned for the same
+    // key - going through ICollection<KeyValuePair<>> gives an atomic, conditional remove-if-still-
+    // equal-to-this-value instead.
+    private bool TryRemoveReservation(string key, (DateTime ExpiresAtUtc, TaskCompletionSource<EnrollmentResult> Tcs) entry) =>
+        ((ICollection<KeyValuePair<string, (DateTime, TaskCompletionSource<EnrollmentResult>)>>)_recentEnrollments)
+            .Remove(new KeyValuePair<string, (DateTime, TaskCompletionSource<EnrollmentResult>)>(key, entry));
 
     public async Task<EnrollmentResult> EnrollCertificateAsync(string csr, string subject,
         Dictionary<string, string[]> san, string orderType, Dictionary<string, string> productParams,
@@ -741,13 +748,13 @@ public class MarkMonitorClient : IDisposable
 
             var comments = caseInsensitiveParams.GetValueOrDefault(
                 MarkMonitorCAPluginConfig.EnrollmentConfigConstants.Comments, "Requested via Keyfactor Command");
-            _logger.LogTrace("Comments: {Comments}", comments);
+            _logger.LogTrace("Comments: {Comments}", LogSanitizer.ForLog(comments));
             var locale = caseInsensitiveParams.GetValueOrDefault(
                 MarkMonitorCAPluginConfig.EnrollmentConfigConstants.Locale, "en");
-            _logger.LogTrace("Locale: {Locale}", locale);
+            _logger.LogTrace("Locale: {Locale}", LogSanitizer.ForLog(locale));
             var provider = caseInsensitiveParams.GetValueOrDefault(
                 MarkMonitorCAPluginConfig.EnrollmentConfigConstants.Provider, "DIGICERT");
-            _logger.LogTrace("Provider: {Provider}", provider);
+            _logger.LogTrace("Provider: {Provider}", LogSanitizer.ForLog(provider));
 
             _logger.LogDebug("Resolving MarkMonitor contact for order");
             var contactParam = caseInsensitiveParams.GetValueOrDefault(
@@ -824,7 +831,7 @@ public class MarkMonitorClient : IDisposable
             logCreateOrderRequest(certOrder);
             var order = await CreateCertificateOrder(certOrder);
 
-            if (order == null) throw new Exception($"Failed to enroll certificate `{subject}` with MarkMonitor");
+            if (order == null) throw new Exception($"Failed to enroll certificate `{logSafeSubject}` with MarkMonitor");
 
             _logger.LogInformation("Certificate enrolled successfully");
             _logger.LogInformation(
@@ -866,8 +873,7 @@ public class MarkMonitorClient : IDisposable
                         "Enrollment for subject {Subject} failed with an ambiguous network-level error - keeping the retry-dedup reservation active for the rest of the window so a retry doesn't risk creating a duplicate MarkMonitor order",
                         logSafeSubject);
                 else
-                    ((ICollection<KeyValuePair<string, (DateTime, TaskCompletionSource<EnrollmentResult>)>>)_recentEnrollments)
-                        .Remove(new KeyValuePair<string, (DateTime, TaskCompletionSource<EnrollmentResult>)>(dedupeKey, ownedEntry));
+                    TryRemoveReservation(dedupeKey, ownedEntry);
             }
 
             throw;
@@ -928,7 +934,8 @@ public class MarkMonitorClient : IDisposable
             string.Equals(g.Name, groupParam, StringComparison.OrdinalIgnoreCase));
         if (matchedGroup != null) return Guid.Parse(matchedGroup.Id);
 
-        _logger.LogWarning("MarkMonitor group '{GroupParam}' could not be resolved to an ID", groupParam);
+        _logger.LogWarning("MarkMonitor group '{GroupParam}' could not be resolved to an ID",
+            LogSanitizer.ForLog(groupParam));
         return null;
     }
 
@@ -938,7 +945,8 @@ public class MarkMonitorClient : IDisposable
             .Select(m => m.GetDescription()).ToList();
         if (validDcvMethods.Contains(dcvMethod, StringComparer.OrdinalIgnoreCase)) return dcvMethod;
 
-        _logger.LogWarning("Invalid DCVMethod '{DcvMethod}' specified, defaulting to EMAIL", dcvMethod);
+        _logger.LogWarning("Invalid DCVMethod '{DcvMethod}' specified, defaulting to EMAIL",
+            LogSanitizer.ForLog(dcvMethod));
         return DomainControlValidationMethods.Email.GetDescription();
     }
 
@@ -1015,14 +1023,14 @@ public class MarkMonitorClient : IDisposable
         _logger.LogTrace("OrganizationId: {OrganizationId}", request.OrganizationId);
         _logger.LogTrace("GroupId: {GroupId}", request.GroupId);
         _logger.LogTrace("CertType: {CertType}", request.CertType);
-        _logger.LogTrace("Locale: {Locale}", request.Locale);
-        _logger.LogTrace("Provider: {Provider}", request.Provider);
-        _logger.LogTrace("Comments: {Comments}", request.Comments);
+        _logger.LogTrace("Locale: {Locale}", LogSanitizer.ForLog(request.Locale));
+        _logger.LogTrace("Provider: {Provider}", LogSanitizer.ForLog(request.Provider));
+        _logger.LogTrace("Comments: {Comments}", LogSanitizer.ForLog(request.Comments));
         // Deliberately not logging AdditionalEmails (requester PII) or the CSR/full Cert object -
         // just enough to confirm the shape of the request without leaking their content.
         _logger.LogTrace("AdditionalEmails count: {AdditionalEmailsCount}", request.AdditionalEmails?.Count ?? 0);
         _logger.LogTrace("SkipPrice: {SkipPrice}", request.SkipPrice);
-        _logger.LogTrace("DcvMethod: {DcvMethod}", request.Cert.DcvMethod);
+        _logger.LogTrace("DcvMethod: {DcvMethod}", LogSanitizer.ForLog(request.Cert.DcvMethod));
         _logger.MethodExit();
     }
 

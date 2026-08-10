@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using Keyfactor.Logging;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.TestHelpers;
 
@@ -8,6 +10,21 @@ namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.TestHelpers;
 /// settable Factory, not the concrete Microsoft.Extensions.Logging.LoggerFactory type).</summary>
 public sealed class CapturingLoggerFactory : ILoggerFactory
 {
+    /// <summary>Points LogHandler.Factory at a fresh CapturingLoggerFactory and returns an
+    /// IDisposable that restores it to a NullLoggerFactory - use with a `using` statement so a test
+    /// doesn't need its own try/finally around the swap.</summary>
+    public static IDisposable Install(out CapturingLoggerFactory factory)
+    {
+        factory = new CapturingLoggerFactory();
+        LogHandler.Factory = factory;
+        return new Restorer();
+    }
+
+    private sealed class Restorer : IDisposable
+    {
+        public void Dispose() => LogHandler.Factory = new NullLoggerFactory();
+    }
+
     public ConcurrentQueue<string> Messages { get; } = new();
 
     public ILogger CreateLogger(string categoryName) => new CapturingLogger(Messages);

@@ -1,8 +1,6 @@
 using System.Net;
 using Keyfactor.Extensions.CAPlugin.MarkMonitor.Client;
 using Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.TestHelpers;
-using Keyfactor.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.Client;
 
@@ -105,35 +103,28 @@ public class MarkMonitorClientAuthLifecycleTests
         // blocked on the lock previously returned silently once it acquired the lock and found
         // TokenNeedsRefresh() false - no signal that it reused a token a concurrent caller just
         // refreshed. Assert the waiter now logs that too.
-        var capturingFactory = new CapturingLoggerFactory();
-        LogHandler.Factory = capturingFactory;
-        try
-        {
-            var clock = new ManualTimeProvider { UtcNow = DateTimeOffset.UtcNow };
-            var authGate = new TaskCompletionSource();
-            var handler = new FakeHttpMessageHandler()
-                .WhenGated(req => FakeHttpMessageHandler.Is(req, "POST", "/auth/v1/auth/authenticate"), authGate.Task,
-                    FakeHttpMessageHandler.Json(HttpStatusCode.OK, """{"token":"fake-token","expiresIn":3600}"""))
-                .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
-                    FakeHttpMessageHandler.Json(HttpStatusCode.OK,
-                        SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())));
-            var client = handler.BuildClient(clock);
+        using var _ = CapturingLoggerFactory.Install(out var capturingFactory);
 
-            // The first call wins the lock and blocks on the gated auth response; the second call
-            // blocks on _authLock.WaitAsync() until the first releases it, then must find the token
-            // already refreshed.
-            var firstCall = client.ListOrganizationsAsync();
-            var secondCall = client.ListOrganizationsAsync();
-            authGate.SetResult();
-            await Task.WhenAll(firstCall, secondCall);
+        var clock = new ManualTimeProvider { UtcNow = DateTimeOffset.UtcNow };
+        var authGate = new TaskCompletionSource();
+        var handler = new FakeHttpMessageHandler()
+            .WhenGated(req => FakeHttpMessageHandler.Is(req, "POST", "/auth/v1/auth/authenticate"), authGate.Task,
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK, """{"token":"fake-token","expiresIn":3600}"""))
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())));
+        var client = handler.BuildClient(clock);
 
-            Assert.Equal(1, AuthCallCount(handler));
-            Assert.Contains(capturingFactory.Messages,
-                m => m.Contains("refreshed by a concurrent caller", StringComparison.OrdinalIgnoreCase));
-        }
-        finally
-        {
-            LogHandler.Factory = new NullLoggerFactory();
-        }
+        // The first call wins the lock and blocks on the gated auth response; the second call
+        // blocks on _authLock.WaitAsync() until the first releases it, then must find the token
+        // already refreshed.
+        var firstCall = client.ListOrganizationsAsync();
+        var secondCall = client.ListOrganizationsAsync();
+        authGate.SetResult();
+        await Task.WhenAll(firstCall, secondCall);
+
+        Assert.Equal(1, AuthCallCount(handler));
+        Assert.Contains(capturingFactory.Messages,
+            m => m.Contains("refreshed by a concurrent caller", StringComparison.OrdinalIgnoreCase));
     }
 }

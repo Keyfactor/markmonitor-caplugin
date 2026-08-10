@@ -1,9 +1,7 @@
 using System.Net;
 using Keyfactor.Extensions.CAPlugin.MarkMonitor.Client;
 using Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.TestHelpers;
-using Keyfactor.Logging;
 using Keyfactor.PKI.Enums.EJBCA;
-using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests;
 
@@ -60,25 +58,18 @@ public class MarkMonitorCAPluginRevokeTests
         // _logger call at all - every other terminating path in this class (Enroll, GetSingleRecord,
         // Synchronize, Ping) logs on exception, but a rejected Revoke left zero trace in the plugin's
         // own logs that the attempt was ever made or why it was refused.
-        var capturingFactory = new CapturingLoggerFactory();
-        LogHandler.Factory = capturingFactory;
-        try
-        {
-            var handler = BaseHandler();
-            var plugin = new MarkMonitorCAPlugin(handler.BuildClient());
-            var configProvider = FakeAnyCAPluginConfigProvider.WithDefaults();
-            configProvider.CAConnectionData[MarkMonitorCAPluginConfig.ConfigConstants.OrgName] = "";
-            plugin.Initialize(configProvider, new FakeCertificateDataReader());
+        using var _ = CapturingLoggerFactory.Install(out var capturingFactory);
 
-            await Assert.ThrowsAsync<Exception>(() => plugin.Revoke(OrderId, "aabbcc", 0));
+        var handler = BaseHandler();
+        var plugin = new MarkMonitorCAPlugin(handler.BuildClient());
+        var configProvider = FakeAnyCAPluginConfigProvider.WithDefaults();
+        configProvider.CAConnectionData[MarkMonitorCAPluginConfig.ConfigConstants.OrgName] = "";
+        plugin.Initialize(configProvider, new FakeCertificateDataReader());
 
-            Assert.Contains(capturingFactory.Messages,
-                m => m.Contains("Revoke failed", StringComparison.OrdinalIgnoreCase) &&
-                     m.Contains(OrderId, StringComparison.Ordinal));
-        }
-        finally
-        {
-            LogHandler.Factory = new NullLoggerFactory();
-        }
+        await Assert.ThrowsAsync<Exception>(() => plugin.Revoke(OrderId, "aabbcc", 0));
+
+        Assert.Contains(capturingFactory.Messages,
+            m => m.Contains("Revoke failed", StringComparison.OrdinalIgnoreCase) &&
+                 m.Contains(OrderId, StringComparison.Ordinal));
     }
 }

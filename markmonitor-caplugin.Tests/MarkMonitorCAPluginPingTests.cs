@@ -46,22 +46,34 @@ public class MarkMonitorCAPluginPingTests
     }
 
     [Fact]
-    public async Task Ping_RequestsOnlyASinglePageOfOrganizations()
+    public async Task Ping_RequestsALargeEnoughPageSizeToAvoidOneRoundTripPerOrganization()
     {
-        // Regression test: Ping() used to call ListOrganizationsAsync() with no limit, which fetches
-        // and accumulates every organization across every page just to check the list is non-empty -
-        // an unbounded cost that grows with account size for what's only an existence check.
+        // Regression test: an earlier version of this fix requested page size 1 as a supposedly cheap
+        // existence check, but ListOrganizationsAsync's pagination loop has no early exit - it always
+        // fetches every page up to TotalPages regardless of what the caller needs. With size=1,
+        // TotalPages equals the account's total organization count, so that "fix" actually turned Ping
+        // into one sequential HTTP request PER organization instead of the single request intended.
+        // Two explicit pages (rather than the default single-page fixture, which hardcodes
+        // totalPages=1 regardless of the requested size and would mask this exact regression) prove
+        // pagination still terminates correctly and uses the corrected, larger page size.
         var handler = new FakeHttpMessageHandler()
             .WithSuccessfulAuth()
-            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization") &&
+                         !(req.RequestUri?.Query.Contains("page=") ?? false),
                 FakeHttpMessageHandler.Json(HttpStatusCode.OK,
-                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())));
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact("11111111-1111-1111-1111-111111111111"))
+                        .Replace("\"totalPages\": 1", "\"totalPages\": 2")))
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "page=1"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact("22222222-2222-2222-2222-222222222222"))
+                        .Replace("\"totalPages\": 1", "\"totalPages\": 2")));
         var plugin = new MarkMonitorCAPlugin(handler.BuildClient());
         plugin.Initialize(FakeAnyCAPluginConfigProvider.WithDefaults(), new FakeCertificateDataReader());
 
         await plugin.Ping();
 
-        var orgRequest = Assert.Single(handler.Requests, req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"));
-        Assert.Equal("?size=1", orgRequest.RequestUri!.Query);
+        var orgRequests = handler.Requests.Where(r => FakeHttpMessageHandler.Is(r, "GET", "/certs/v1/organization")).ToList();
+        Assert.Equal(2, orgRequests.Count);
+        Assert.All(orgRequests, r => Assert.Contains("size=100", r.RequestUri!.Query));
     }
 }

@@ -650,7 +650,12 @@ public class MarkMonitorClient : IDisposable
     private static void ValidateGuidFormat(string value, string paramName, string description)
     {
         if (!Guid.TryParse(value, out _))
-            throw new ArgumentException($"'{value}' is not a valid {description} (expected a GUID)", paramName);
+            // The rejected value is embedded in this exception's own Message, which multiple callers
+            // (this class's own catch blocks, and MarkMonitorCAConnector's) log verbatim via e.Message
+            // - sanitize it here, at the source, rather than trying to catch every downstream log call
+            // that might surface it (CWE-117).
+            throw new ArgumentException(
+                $"'{LogSanitizer.ForLog(value)}' is not a valid {description} (expected a GUID)", paramName);
     }
 
     private string getCsrAlgorithm(Pkcs10CertificationRequest csr)
@@ -1135,6 +1140,16 @@ public class MarkMonitorClient : IDisposable
                         parseException);
                 }
 
+                if (order == null)
+                    // An empty body or a literal "null" both deserialize to null without throwing -
+                    // same "MarkMonitor confirmed creation, but we can't read the result" situation as
+                    // the catch above, just without an exception to wrap. Must not fall through to
+                    // order.Id below, which would throw a plain NullReferenceException that
+                    // EnrollCertificateAsync's isAmbiguousOutcome check doesn't recognize as ambiguous.
+                    throw new MarkMonitorOrderCreatedButUnparsableException(
+                        "MarkMonitor returned a successful response for order creation, but its body was empty or null",
+                        null);
+
                 _logger.LogInformation("Certificate order {OrderId} created", order.Id);
                 return order;
             }
@@ -1160,7 +1175,12 @@ public class MarkMonitorClient : IDisposable
         try
         {
             ValidateGuidFormat(orderId, nameof(orderId), "MarkMonitor order ID");
-            _logger.LogInformation("Cancelling certificate {CertificateId}", orderId);
+            // orderId is caller-supplied - log a CR/LF-escaped copy so an embedded CR/LF can't forge a
+            // fake log line (CWE-117). ValidateGuidFormat above already guarantees it's GUID-shaped
+            // for normal (non-exceptional) calls, but its own exception message is sanitized too, so
+            // this covers the exceptional path as well.
+            var logSafeOrderId = LogSanitizer.ForLog(orderId);
+            _logger.LogInformation("Cancelling certificate {CertificateId}", logSafeOrderId);
             await EnsureAuthenticatedAsync();
 
             await EnsureOrderBelongsToOrganizationAsync(orderId, orgName, "Cancelling", "cancel");
@@ -1174,19 +1194,19 @@ public class MarkMonitorClient : IDisposable
             var content = await response.Content.ReadAsStringAsync();
             if (response.IsSuccessStatusCode)
             {
-                _logger.LogInformation("Certificate {CertificateId} has been cancelled", orderId);
+                _logger.LogInformation("Certificate {CertificateId} has been cancelled", logSafeOrderId);
                 return true;
             }
 
             var errMsg = BuildErrorString(content);
             _logger.LogError("An error has occurred while attempting to cancel order {CertificateId}: {EMessage}",
-                orderId, errMsg);
+                logSafeOrderId, errMsg);
             throw new Exception(errMsg);
         }
         catch (Exception e)
         {
-            _logger.LogError("An error has occurred while attempting to cancel {CertificateId}: {EMessage}", orderId,
-                e.Message);
+            _logger.LogError("An error has occurred while attempting to cancel {CertificateId}: {EMessage}",
+                LogSanitizer.ForLog(orderId), e.Message);
             throw;
         }
         finally
@@ -1201,7 +1221,10 @@ public class MarkMonitorClient : IDisposable
         try
         {
             ValidateGuidFormat(orderId, nameof(orderId), "MarkMonitor order ID");
-            _logger.LogInformation("Revoking certificate {CertificateId}", orderId);
+            // orderId is caller-supplied - log a CR/LF-escaped copy so an embedded CR/LF can't forge a
+            // fake log line (CWE-117).
+            var logSafeOrderId = LogSanitizer.ForLog(orderId);
+            _logger.LogInformation("Revoking certificate {CertificateId}", logSafeOrderId);
             await EnsureAuthenticatedAsync();
 
             var url = $"{BaseUrl}/certs/v1/order/{orderId}/reissue";
@@ -1218,19 +1241,19 @@ public class MarkMonitorClient : IDisposable
             var content = await response.Content.ReadAsStringAsync();
             if (response.IsSuccessStatusCode)
             {
-                _logger.LogInformation("Certificate {CertificateId} has been reissued", orderId);
+                _logger.LogInformation("Certificate {CertificateId} has been reissued", logSafeOrderId);
                 return true;
             }
 
             var errMsg = BuildErrorString(content);
-            _logger.LogError("An error has occurred while attempting to reissue {CertificateId}: {EMessage}", orderId,
-                errMsg);
+            _logger.LogError("An error has occurred while attempting to reissue {CertificateId}: {EMessage}",
+                logSafeOrderId, errMsg);
             throw new Exception(errMsg);
         }
         catch (Exception e)
         {
-            _logger.LogError("An error has occurred while attempting to reissue {CertificateId}: {EMessage}", orderId,
-                e.Message);
+            _logger.LogError("An error has occurred while attempting to reissue {CertificateId}: {EMessage}",
+                LogSanitizer.ForLog(orderId), e.Message);
             throw;
         }
     }
@@ -1249,11 +1272,14 @@ public class MarkMonitorClient : IDisposable
         try
         {
             ValidateGuidFormat(orderId, nameof(orderId), "MarkMonitor order ID");
-            _logger.LogInformation("Revoking certificate associated with order {OrderId}", orderId);
+            // orderId is caller-supplied - log a CR/LF-escaped copy so an embedded CR/LF can't forge a
+            // fake log line (CWE-117).
+            var logSafeOrderId = LogSanitizer.ForLog(orderId);
+            _logger.LogInformation("Revoking certificate associated with order {OrderId}", logSafeOrderId);
             if (reason != 0)
                 _logger.LogWarning(
                     "Revocation reason {Reason} was requested for order {OrderId}, but MarkMonitor's revoke API has no field for a reason code - it will not be sent",
-                    reason, orderId);
+                    reason, logSafeOrderId);
             await EnsureAuthenticatedAsync();
 
             await EnsureOrderBelongsToOrganizationAsync(orderId, orgName, "Revoking", "revoke");
@@ -1267,19 +1293,19 @@ public class MarkMonitorClient : IDisposable
             var content = await response.Content.ReadAsStringAsync();
             if (response.IsSuccessStatusCode)
             {
-                _logger.LogInformation("Certificate {CertificateId} has been revoked", orderId);
+                _logger.LogInformation("Certificate {CertificateId} has been revoked", logSafeOrderId);
                 return true;
             }
 
             var errMsg = BuildErrorString(content);
-            _logger.LogError("An error has occurred while attempting to revoke {CertificateId}: {EMessage}", orderId,
-                errMsg);
+            _logger.LogError("An error has occurred while attempting to revoke {CertificateId}: {EMessage}",
+                logSafeOrderId, errMsg);
             throw new Exception(errMsg);
         }
         catch (Exception e)
         {
-            _logger.LogError("An error has occurred while attempting to revoke {CertificateId}: {EMessage}", orderId,
-                e.Message);
+            _logger.LogError("An error has occurred while attempting to revoke {CertificateId}: {EMessage}",
+                LogSanitizer.ForLog(orderId), e.Message);
             throw;
         }
         finally

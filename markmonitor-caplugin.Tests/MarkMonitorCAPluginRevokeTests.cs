@@ -72,4 +72,23 @@ public class MarkMonitorCAPluginRevokeTests
             m => m.Contains("Revoke failed", StringComparison.OrdinalIgnoreCase) &&
                  m.Contains(OrderId, StringComparison.Ordinal));
     }
+
+    [Fact]
+    public async Task Revoke_WithOrderIdContainingCrLf_SanitizesItInLogOutput()
+    {
+        // Regression test (CWE-117): Revoke() used to log the caller-supplied orderId/
+        // hexSerialNumber verbatim before the GUID/format validation performed deeper inside
+        // MarkMonitorClient ever ran, letting an embedded CR/LF forge a fake log line.
+        using var _ = CapturingLoggerFactory.Install(out var capturingFactory);
+
+        const string maliciousOrderId = "not-a-guid\r\n2026-08-10 09:00:00 [INF] FAKE forged log line";
+        var handler = BaseHandler();
+        var plugin = new MarkMonitorCAPlugin(handler.BuildClient());
+        plugin.Initialize(FakeAnyCAPluginConfigProvider.WithDefaults(), new FakeCertificateDataReader());
+
+        await Assert.ThrowsAsync<Exception>(() => plugin.Revoke(maliciousOrderId, "aabbcc", 0));
+
+        Assert.DoesNotContain(capturingFactory.Messages, m => m.Contains("\r\n", StringComparison.Ordinal));
+        Assert.Contains(capturingFactory.Messages, m => m.Contains("\\r\\n", StringComparison.Ordinal));
+    }
 }

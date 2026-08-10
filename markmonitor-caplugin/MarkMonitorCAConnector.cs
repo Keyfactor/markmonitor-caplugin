@@ -86,18 +86,22 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
     public async Task<AnyCAPluginCertificate> GetSingleRecord(string caRequestId)
     {
         _logger.MethodEntry();
+        // caRequestId is caller-supplied and only validated as a GUID deeper inside MarkMonitorClient
+        // - log a CR/LF-escaped copy here so an embedded CR/LF can't forge a fake log line (CWE-117)
+        // before that validation ever runs.
+        var logSafeCaRequestId = LogSanitizer.ForLog(caRequestId);
         try
         {
             var client = await CreateAndAuthenticateClientAsync();
-            _logger.LogInformation("Getting order details for CARequestID: {CARequestID}", caRequestId);
+            _logger.LogInformation("Getting order details for CARequestID: {CARequestID}", logSafeCaRequestId);
             var order = await client.GetSingleOrderAsync(caRequestId);
-            _logger.LogInformation("Order details retrieved for CARequestID: {CARequestID}", caRequestId);
+            _logger.LogInformation("Order details retrieved for CARequestID: {CARequestID}", logSafeCaRequestId);
             return order;
         }
         catch (Exception e)
         {
-            _logger.LogError("Failed to get order details for CARequestID {CARequestID}: {EMessage}", caRequestId,
-                e.Message);
+            _logger.LogError("Failed to get order details for CARequestID {CARequestID}: {EMessage}",
+                logSafeCaRequestId, e.Message);
             throw;
         }
         finally
@@ -150,17 +154,22 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
     public async Task<int> Revoke(string orderId, string hexSerialNumber, uint revocationReason)
     {
         _logger.MethodEntry();
+        // orderId/hexSerialNumber are caller-supplied and only validated as a GUID deeper inside
+        // MarkMonitorClient - log CR/LF-escaped copies here so an embedded CR/LF can't forge a fake
+        // log line (CWE-117) before that validation ever runs.
+        var logSafeOrderId = LogSanitizer.ForLog(orderId);
+        var logSafeHexSerialNumber = LogSanitizer.ForLog(hexSerialNumber);
         try
         {
             EnsureOrgNameConfigured();
 
             _logger.LogInformation(
                 "Revoking certificate with CARequestID: {CaRequestId}, SerialNumber: {HexSerialNumber}, Reason: {RevocationReason}",
-                orderId, hexSerialNumber, revocationReason);
+                logSafeOrderId, logSafeHexSerialNumber, revocationReason);
 
             var client = await CreateAndAuthenticateClientAsync();
 
-            _logger.LogInformation("Attempting to revoke certificate with CARequestID: {CaRequestId}", orderId);
+            _logger.LogInformation("Attempting to revoke certificate with CARequestID: {CaRequestId}", logSafeOrderId);
 
             var revokeResult = await client.RevokeCertificateAsync(orderId, _config.OrgName, revocationReason);
 
@@ -170,7 +179,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         }
         catch (Exception e)
         {
-            _logger.LogError("Revoke failed for order {OrderId}: {EMessage}", orderId, e.Message);
+            _logger.LogError("Revoke failed for order {OrderId}: {EMessage}", logSafeOrderId, e.Message);
             throw new Exception($"Revoke Failed with message {e.Message}");
         }
         finally
@@ -294,9 +303,13 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             if (client == null) throw new Exception("Error attempting to ping MarkMonitor");
 
             _logger.LogInformation("Attempting to list organizations");
-            // limit=1: this is only an existence check (orgs.Any() below) - no need to page through
-            // every organization on the account just to confirm at least one exists.
-            var orgs = await client.ListOrganizationsAsync(0, 1);
+            // ListOrganizationsAsync's pagination loop has no early exit - it always fetches every
+            // page up to TotalPages regardless of what the caller actually needs. A page size of 1
+            // (an earlier version of this fix) backfires badly here: TotalPages becomes the account's
+            // total organization count, turning this existence check into one sequential HTTP request
+            // per organization. Page size 100 - the same size already used for org-name resolution -
+            // keeps this to a single request for the common case instead.
+            var orgs = await client.ListOrganizationsAsync(0, 100);
             // CreateAndAuthenticateClientAsync deliberately does NOT authenticate eagerly (see its own
             // doc comment) - it just builds/caches the client wrapper. The real authentication happens
             // lazily inside ListOrganizationsAsync above (via EnsureAuthenticatedAsync, properly

@@ -326,6 +326,37 @@ public class MarkMonitorClientEnrollIdempotencyTests
         Assert.Equal(1, OrderCreationCount(handler));
     }
 
+    [Fact]
+    public async Task
+        EnrollCertificateAsync_WhenMarkMonitorReturnsSuccessWithANullBody_ARetryWithinTheWindowDoesNotCreateASecondOrder()
+    {
+        // Regression test: a 2xx order-create response whose body is empty/literal "null" deserializes
+        // to a null OrderContent WITHOUT throwing (Newtonsoft.Json doesn't throw for this case), so it
+        // slipped past the try/catch that converts unparsable bodies into
+        // MarkMonitorOrderCreatedButUnparsableException, falling through to `order.Id` and throwing a
+        // plain NullReferenceException instead - a type isAmbiguousOutcome doesn't recognize, so the
+        // reservation was evicted and a retry could create a genuine duplicate order.
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())))
+            .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.Accepted, "null"));
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+
+        await Assert.ThrowsAsync<MarkMonitorOrderCreatedButUnparsableException>(() => client.EnrollCertificateAsync(
+            SampleCsr.Pem, "CN=test.mmcertdomain.com", new Dictionary<string, string[]>(), "SslDvGeotrust",
+            new Dictionary<string, string>(), Config()));
+
+        await Assert.ThrowsAsync<MarkMonitorOrderCreatedButUnparsableException>(() => client.EnrollCertificateAsync(
+            SampleCsr.Pem, "CN=test.mmcertdomain.com", new Dictionary<string, string[]>(), "SslDvGeotrust",
+            new Dictionary<string, string>(), Config()));
+
+        Assert.Equal(1, OrderCreationCount(handler));
+    }
+
     private static async Task WaitUntil(Func<bool> condition)
     {
         var deadline = DateTime.UtcNow.AddSeconds(5);

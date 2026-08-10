@@ -40,6 +40,13 @@ public class MarkMonitorClient : IDisposable
     // dedup store (that would need to live in MarkMonitor itself).
     private static readonly TimeSpan RecentEnrollmentWindow = TimeSpan.FromMinutes(5);
 
+    // Used when resolving an org/group by friendly name (ResolveOrganizationIdAsync,
+    // ResolveOrganizationAsync, ResolveGroupIdAsync): MarkMonitor's name filter can return several
+    // fuzzy matches for one configured name, and a small page size would force one sequential HTTP
+    // round-trip per match just to page through them all before each method's own exact-match filter
+    // ever runs - this fetches all of them in one request instead.
+    private const int NameResolutionPageSize = 100;
+
     private readonly ConcurrentDictionary<string, (DateTime ExpiresAtUtc, TaskCompletionSource<EnrollmentResult> Tcs)>
         _recentEnrollments = new();
 
@@ -563,11 +570,7 @@ public class MarkMonitorClient : IDisposable
         if (Guid.TryParse(orgNameOrId, out _)) return orgNameOrId;
         if (_resolvedOrgIdByName.TryGetValue(orgNameOrId, out var cachedOrgId)) return cachedOrgId;
 
-        // A page size of 100 (not 1) here: MarkMonitor's name filter can return several fuzzy
-        // matches for one configured name, and a page size of 1 would force one sequential HTTP
-        // round-trip per match just to page through them all before the exact-match filter below
-        // ever runs - this fetches all of them in one request instead.
-        var orgs = await ListOrganizationsAsync(0, 100, orgNameOrId);
+        var orgs = await ListOrganizationsAsync(0, NameResolutionPageSize, orgNameOrId);
         // MarkMonitor's own name filter may do substring/fuzzy matching rather than exact matching,
         // so filter to an exact (case-insensitive) name match ourselves rather than trusting the
         // first result - otherwise a configured name that's a substring of another org's name (e.g.
@@ -990,8 +993,7 @@ public class MarkMonitorClient : IDisposable
         }
         else
         {
-            // Page size 100, not 1 - see ResolveOrganizationIdAsync's comment on the same call.
-            var orgs = await ListOrganizationsAsync(0, 100, orgNameOrId);
+            var orgs = await ListOrganizationsAsync(0, NameResolutionPageSize, orgNameOrId);
             _logger.LogTrace("Organizations found: {@Orgs}", orgs);
             // ListOrganizationsAsync throws rather than returning null on error, so orgs is never
             // null here - just possibly empty. MarkMonitor's own name filter may do substring/fuzzy
@@ -1027,10 +1029,7 @@ public class MarkMonitorClient : IDisposable
 
         if (_resolvedGroupIdByName.TryGetValue(groupParam, out var cachedGroupId)) return cachedGroupId;
 
-        // Page size 100, not 0 (server default) - see ResolveOrganizationIdAsync's comment on the
-        // identical fuzzy-match, filter-by-exact-name pattern: a small page size costs one sequential
-        // HTTP round-trip per fuzzy match instead of one round-trip total.
-        var groups = await ListGroupsAsync(0, 100, groupParam);
+        var groups = await ListGroupsAsync(0, NameResolutionPageSize, groupParam);
         var matchedGroup = groups?.FirstOrDefault(g =>
             string.Equals(g.Name, groupParam, StringComparison.OrdinalIgnoreCase));
         if (matchedGroup != null)

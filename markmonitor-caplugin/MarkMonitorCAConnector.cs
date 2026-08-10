@@ -60,36 +60,19 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
     {
         _logger.MethodEntry();
         _logger.LogInformation("MarkMonitorCAPlugin config baseUrl: {Config}", _config.BaseUrl);
-        // _logger.LogInformation("MarkMonitorCAPlugin config apiKey: {Config}", _config.ApiKey);
-        if (_config.ApiKey is { Length: > 0 })
-        {
-            _logger.LogInformation("MarkMonitorCAPlugin config apiKey: {Config}", new string('*', 32));
-        }
-        else
-        {
-            _logger.LogError("MarkMonitorCAPlugin config apiKey: NOT SET");
-        }
-        // _logger.LogInformation("MarkMonitorCAPlugin config apiUsername: {Config}", _config.ApiUsername);
-        if (_config.ApiUsername is { Length: > 0 })
-        {
-            _logger.LogInformation("MarkMonitorCAPlugin config apiUsername: {Config}", new string('*', 32));
-        }
-        else
-        {
-            _logger.LogError("MarkMonitorCAPlugin config apiUsername: NOT SET");
-        }
-        // _logger.LogInformation("MarkMonitorCAPlugin config apiPassword: {Config}", _config.ApiPassword);
-        if (_config.ApiPassword is { Length: > 0 })
-        {
-            _logger.LogInformation("MarkMonitorCAPlugin config apiPassword: {Config}", new string('*', 32));
-        }
-        else
-        {
-            _logger.LogError("MarkMonitorCAPlugin config apiPassword: NOT SET");
-        }
-        
+        LogMaskedConfigValue("apiKey", _config.ApiKey);
+        LogMaskedConfigValue("apiUsername", _config.ApiUsername);
+        LogMaskedConfigValue("apiPassword", _config.ApiPassword);
         _logger.LogInformation("MarkMonitorCAPlugin config orgName: {Config}", _config.OrgName);
         _logger.MethodExit();
+    }
+
+    private void LogMaskedConfigValue(string label, string value)
+    {
+        if (value is { Length: > 0 })
+            _logger.LogInformation("MarkMonitorCAPlugin config {Label}: {Config}", label, new string('*', 32));
+        else
+            _logger.LogError("MarkMonitorCAPlugin config {Label}: NOT SET", label);
     }
 
     public async Task<AnyCAPluginCertificate> GetSingleRecord(string caRequestId)
@@ -179,6 +162,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         }
         catch (Exception e)
         {
+            _logger.LogError("Revoke failed for order {OrderId}: {EMessage}", orderId, e.Message);
             throw new Exception($"Revoke Failed with message {e.Message}");
         }
         finally
@@ -191,15 +175,19 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         EnrollmentProductInfo productInfo, RequestFormat requestFormat, EnrollmentType enrollmentType)
     {
         _logger.MethodEntry();
+        // Subject is fully requester-controlled (it comes straight off the submitted CSR) - log a
+        // CR/LF-escaped copy everywhere below so an embedded CR/LF can't forge a fake log line
+        // (CWE-117). The real, unsanitized subject is still what's actually used for enrollment.
+        var logSafeSubject = LogSanitizer.ForLog(subject);
         try
         {
-            _logger.LogInformation("Enrolling certificate `{Subject}` with MarkMonitor", subject);
+            _logger.LogInformation("Enrolling certificate `{Subject}` with MarkMonitor", logSafeSubject);
 
             var client = await CreateAndAuthenticateClientAsync();
 
             _logger.LogInformation("Performing an Enrollment");
             _logger.LogTrace("CSR: {Csr}", csr);
-            _logger.LogTrace("Subject: {Subject}", subject);
+            _logger.LogTrace("Subject: {Subject}", logSafeSubject);
             _logger.LogTrace("SAN: {San}", JsonConvert.SerializeObject(san));
             _logger.LogTrace("Product ID: {ProductId}", productInfo.ProductID);
 
@@ -207,7 +195,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
                 productInfo.ProductParameters, _config);
 
             _logger.LogTrace("Enrollment result: {EnrollResult}", JsonConvert.SerializeObject(enrollResult));
-            _logger.LogInformation("Enrollment completed successfully for subject: {Subject}", subject);
+            _logger.LogInformation("Enrollment completed successfully for subject: {Subject}", logSafeSubject);
 
             if (enrollmentType == EnrollmentType.RenewOrReissue)
                 await RevokePriorCertificateIfPresentAsync(client, productInfo, subject, enrollResult.CARequestID);
@@ -216,7 +204,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         }
         catch (Exception e)
         {
-            _logger.LogError("Enrollment failed for subject {Subject}: {EMessage}", subject, e.Message);
+            _logger.LogError("Enrollment failed for subject {Subject}: {EMessage}", logSafeSubject, e.Message);
             throw;
         }
         finally
@@ -243,7 +231,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         {
             _logger.LogWarning(
                 "Enrollment for {Subject} was requested as RenewOrReissue but no PriorCertSN was provided - treating it as a new enrollment",
-                subject);
+                LogSanitizer.ForLog(subject));
             return;
         }
 

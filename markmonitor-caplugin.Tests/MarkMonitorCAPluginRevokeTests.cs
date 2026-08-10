@@ -1,10 +1,13 @@
 using System.Net;
 using Keyfactor.Extensions.CAPlugin.MarkMonitor.Client;
 using Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.TestHelpers;
+using Keyfactor.Logging;
 using Keyfactor.PKI.Enums.EJBCA;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests;
 
+[Collection(LogHandlerFactoryCollection.Name)]
 public class MarkMonitorCAPluginRevokeTests
 {
     private const string OrderId = "11111111-1111-1111-1111-111111111111";
@@ -48,5 +51,34 @@ public class MarkMonitorCAPluginRevokeTests
         await Assert.ThrowsAsync<Exception>(() => plugin.Revoke(OrderId, "aabbcc", 0));
 
         Assert.DoesNotContain(handler.Requests, r => FakeHttpMessageHandler.Is(r, "PATCH", "/revoke"));
+    }
+
+    [Fact]
+    public async Task Revoke_WithBlankOrgNameConfigured_LogsTheFailureBeforeThrowing()
+    {
+        // Regression test: Revoke()'s catch block used to rethrow a wrapped exception with no
+        // _logger call at all - every other terminating path in this class (Enroll, GetSingleRecord,
+        // Synchronize, Ping) logs on exception, but a rejected Revoke left zero trace in the plugin's
+        // own logs that the attempt was ever made or why it was refused.
+        var capturingFactory = new CapturingLoggerFactory();
+        LogHandler.Factory = capturingFactory;
+        try
+        {
+            var handler = BaseHandler();
+            var plugin = new MarkMonitorCAPlugin(handler.BuildClient());
+            var configProvider = FakeAnyCAPluginConfigProvider.WithDefaults();
+            configProvider.CAConnectionData[MarkMonitorCAPluginConfig.ConfigConstants.OrgName] = "";
+            plugin.Initialize(configProvider, new FakeCertificateDataReader());
+
+            await Assert.ThrowsAsync<Exception>(() => plugin.Revoke(OrderId, "aabbcc", 0));
+
+            Assert.Contains(capturingFactory.Messages,
+                m => m.Contains("Revoke failed", StringComparison.OrdinalIgnoreCase) &&
+                     m.Contains(OrderId, StringComparison.Ordinal));
+        }
+        finally
+        {
+            LogHandler.Factory = new NullLoggerFactory();
+        }
     }
 }

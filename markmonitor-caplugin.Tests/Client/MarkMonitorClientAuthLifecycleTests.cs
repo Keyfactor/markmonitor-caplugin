@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.Client;
 
+[Collection(LogHandlerFactoryCollection.Name)]
 public class MarkMonitorClientAuthLifecycleTests
 {
     private static int AuthCallCount(FakeHttpMessageHandler handler) =>

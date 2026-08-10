@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 
 namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.Client;
 
+[Collection(LogHandlerFactoryCollection.Name)]
 public class MarkMonitorClientEnrollIdempotencyTests
 {
     private static MarkMonitorConfig Config() => SampleConfig.Default();
@@ -223,6 +224,65 @@ public class MarkMonitorClientEnrollIdempotencyTests
 
         Assert.NotNull(retryResult);
         Assert.Equal(2, OrderCreationCount(handler));
+    }
+
+    [Fact]
+    public async Task EnrollCertificateAsync_ManySuccessfulEnrollmentsOverTime_DoesNotAccumulateReservationsUnbounded()
+    {
+        // Regression test: _recentEnrollments used to have no eviction path for a *successful*
+        // enrollment - every unique CSR/subject left a permanent entry (holding the CSR and issued
+        // cert chain) for the remaining lifetime of the process. After the fix, a stale completed
+        // reservation is pruned the next time EnrollCertificateAsync runs, so the dictionary tracks
+        // only "enrollments within the last window", not "enrollments ever performed".
+        var clock = new ManualTimeProvider { UtcNow = DateTimeOffset.UtcNow };
+        var handler = BuildHandler();
+        var client = handler.BuildClient(clock);
+        await client.AuthenticateAsync();
+
+        await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
+        Assert.Equal(1, client.RecentEnrollmentsCount);
+
+        clock.UtcNow = clock.UtcNow.AddMinutes(6);
+
+        await client.EnrollCertificateAsync(SampleCsr2.Pem, "CN=other.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
+
+        // Only the newest reservation should remain - the first, long-expired-and-completed one must
+        // have been pruned rather than kept forever.
+        Assert.Equal(1, client.RecentEnrollmentsCount);
+    }
+
+    [Fact]
+    public async Task
+        EnrollCertificateAsync_WhenTheFirstAttemptFailsWithAnAmbiguousNetworkError_ARetryWithinTheWindowGetsTheSameFailureInsteadOfCreatingASecondOrder()
+    {
+        // Regression test: an ambiguous transport-level failure (here, HttpRequestException - the
+        // exception HttpClient throws for a dropped connection) used to be treated identically to a
+        // definite rejection, evicting the reservation immediately. A Command retry for the same
+        // subject/CSR within the window would then find no reservation and create a second, real
+        // MarkMonitor order - even though the first order might have actually gone through server-side
+        // before the connection dropped. After the fix, the reservation stays active for an ambiguous
+        // failure, so the retry is folded into the same failed reservation instead of racing ahead.
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())))
+            .WhenAsync(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
+                _ => Task.FromException<HttpResponseMessage>(new HttpRequestException("Simulated connection reset")));
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.EnrollCertificateAsync(SampleCsr.Pem,
+            "CN=test.mmcertdomain.com", new Dictionary<string, string[]>(), "SslDvGeotrust",
+            new Dictionary<string, string>(), Config()));
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.EnrollCertificateAsync(SampleCsr.Pem,
+            "CN=test.mmcertdomain.com", new Dictionary<string, string[]>(), "SslDvGeotrust",
+            new Dictionary<string, string>(), Config()));
+
+        Assert.Equal(1, OrderCreationCount(handler));
     }
 
     private static async Task WaitUntil(Func<bool> condition)

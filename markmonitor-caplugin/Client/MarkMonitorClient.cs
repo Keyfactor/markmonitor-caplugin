@@ -42,6 +42,12 @@ public class MarkMonitorClient : IDisposable
     private readonly ConcurrentDictionary<string, (DateTime ExpiresAtUtc, TaskCompletionSource<EnrollmentResult> Tcs)>
         _recentEnrollments = new();
 
+    /// <summary>Test-only visibility into how many reservations (successful, failed, or in-flight)
+    /// are currently held in <see cref="_recentEnrollments"/> - used to assert that
+    /// <see cref="PruneExpiredReservations"/> actually bounds the dictionary's growth over time
+    /// rather than accumulating one permanent entry per successful enrollment.</summary>
+    internal int RecentEnrollmentsCount => _recentEnrollments.Count;
+
     public MarkMonitorClient(string baseUrl, string apiKey, string username, string password, bool validateSsl = true,
         HttpMessageHandler handler = null, TimeProvider timeProvider = null)
     {
@@ -168,7 +174,7 @@ public class MarkMonitorClient : IDisposable
             await EnsureAuthenticatedAsync();
             _logger.LogInformation("Retrieving certificate inventory from MarkMonitor");
             var certificateOrders =
-                await ListCertificateOrdersAsync(0, caId, sort, limit); //todo: providerId support???
+                await ListCertificateOrdersAsync(0, caId, sort, limit, cancelToken); //todo: providerId support???
             _logger.LogDebug("Retrieved '{CertificateCount}' certificate orders", certificateOrders.Count);
 
             var numberOfCertificates = 0;
@@ -280,7 +286,7 @@ public class MarkMonitorClient : IDisposable
     }
 
     public async Task<List<OrderContent>> ListCertificateOrdersAsync(int providerId, string orgId, string sort,
-        int limit)
+        int limit, CancellationToken cancelToken = default)
     {
         _logger.MethodEntry();
         await EnsureAuthenticatedAsync();
@@ -293,6 +299,8 @@ public class MarkMonitorClient : IDisposable
 
             do
             {
+                cancelToken.ThrowIfCancellationRequested();
+
                 var nextUrl =
                     $"{BaseUrl}/certs/v1/order";
                 _logger.LogTrace("Base URL: {BaseUrl}", nextUrl);
@@ -304,7 +312,7 @@ public class MarkMonitorClient : IDisposable
                 _logger.LogTrace("Getting page \'{CurrentPage}\' of \'{Limit}\')", currentPage, limit);
 
                 _logger.LogDebug("Getting certificate orders from MarkMonitor {NextUrl}", nextUrl);
-                var response = await _httpClient.GetAsync(nextUrl); // Pass the token here
+                var response = await _httpClient.GetAsync(nextUrl, cancelToken);
 
                 _logger.LogDebug("Reading response content");
                 var content = await response.Content.ReadAsStringAsync();
@@ -646,12 +654,32 @@ public class MarkMonitorClient : IDisposable
         (DateTime ExpiresAtUtc, TaskCompletionSource<EnrollmentResult> Tcs) entry, DateTime now) =>
         entry.ExpiresAtUtc > now || !entry.Tcs.Task.IsCompleted;
 
+    // _recentEnrollments has no eviction path for a *successful* enrollment - the dedupe key is
+    // built from the CSR, which is unique per real-world request, so a completed success entry is
+    // essentially never looked up again and would otherwise sit in the dictionary (holding the full
+    // CSR and issued cert chain) for the remaining lifetime of the process. Sweeping expired-and-
+    // completed entries here, on every enrollment call, keeps the dictionary bounded by "enrollments
+    // within the last RecentEnrollmentWindow" instead of "enrollments ever performed" - without a
+    // separate timer/thread to manage. Only entries IsReservationStillActive already says are safe to
+    // drop (window elapsed AND the call finished) are removed, so a genuinely in-flight reservation is
+    // never touched.
+    private void PruneExpiredReservations(DateTime now)
+    {
+        foreach (var entry in _recentEnrollments)
+            if (!IsReservationStillActive(entry.Value, now))
+                ((ICollection<KeyValuePair<string, (DateTime, TaskCompletionSource<EnrollmentResult>)>>)_recentEnrollments)
+                    .Remove(entry);
+    }
+
     public async Task<EnrollmentResult> EnrollCertificateAsync(string csr, string subject,
         Dictionary<string, string[]> san, string orderType, Dictionary<string, string> productParams,
         MarkMonitorConfig config)
     {
         _logger.MethodEntry();
         var dedupeKey = $"{config.OrgName}|{orderType}|{subject}|{csr}";
+        // Subject is fully requester-controlled (straight off the submitted CSR) - log a CR/LF-
+        // escaped copy everywhere below so an embedded CR/LF can't forge a fake log line (CWE-117).
+        var logSafeSubject = LogSanitizer.ForLog(subject);
         TaskCompletionSource<EnrollmentResult> ownedReservation = null;
         (DateTime ExpiresAtUtc, TaskCompletionSource<EnrollmentResult> Tcs) ownedEntry = default;
         try
@@ -659,12 +687,13 @@ public class MarkMonitorClient : IDisposable
             await EnsureAuthenticatedAsync();
 
             var now = _timeProvider.GetUtcNow().UtcDateTime;
+            PruneExpiredReservations(now);
             if (_recentEnrollments.TryGetValue(dedupeKey, out var existing) && IsReservationStillActive(existing, now))
             {
                 var dedupedResult = await existing.Tcs.Task;
                 _logger.LogWarning(
                     "An identical enrollment for subject {Subject} was already submitted in the last {Minutes} minute(s) - folded into existing order {CARequestID} instead of creating a duplicate",
-                    subject, RecentEnrollmentWindow.TotalMinutes, dedupedResult.CARequestID);
+                    logSafeSubject, RecentEnrollmentWindow.TotalMinutes, dedupedResult.CARequestID);
                 return dedupedResult;
             }
 
@@ -688,7 +717,7 @@ public class MarkMonitorClient : IDisposable
             {
                 _logger.LogWarning(
                     "An identical enrollment for subject {Subject} is already in flight - awaiting that result instead of creating a duplicate order",
-                    subject);
+                    logSafeSubject);
                 return await reserved.Tcs.Task;
             }
 
@@ -816,15 +845,29 @@ public class MarkMonitorClient : IDisposable
             _logger.LogError("An error has occurred: {EMessage}", e.Message);
             if (ownedReservation != null)
             {
-                // Don't cache a failed attempt - a retry after a real failure should get a fresh
-                // attempt, not be stuck replaying this exception until the window expires. Conditional
-                // TryRemove, not a bare key-based one: if this reservation's own window already expired
-                // while this call was still running, a different caller may have since won a fresh
-                // reservation for the same key - an unconditional remove would delete THEIR entry
-                // instead of (the no-longer-present) one this call owned.
                 ownedReservation.SetException(e);
-                ((ICollection<KeyValuePair<string, (DateTime, TaskCompletionSource<EnrollmentResult>)>>)_recentEnrollments)
-                    .Remove(new KeyValuePair<string, (DateTime, TaskCompletionSource<EnrollmentResult>)>(dedupeKey, ownedEntry));
+
+                // A transport-level failure (timeout, dropped connection) means we genuinely don't
+                // know whether MarkMonitor actually created the order before the failure - exactly
+                // the ambiguous case this cache exists to guard against (see the class-level comment).
+                // Don't evict the reservation for that case: keep it in _recentEnrollments so a
+                // Command retry within the window is folded into this (now-faulted) reservation
+                // instead of racing ahead to create a second real order. Only evict for a definite
+                // failure - one where a response was actually received (or the request never left the
+                // process, e.g. a config/CSR-parsing error) - so a retry after a real rejection gets a
+                // fresh attempt rather than being stuck replaying this exception until the window
+                // expires. Conditional Remove, not a bare key-based one: if this reservation's own
+                // window already expired while this call was still running, a different caller may
+                // have since won a fresh reservation for the same key - an unconditional remove would
+                // delete THEIR entry instead of (the no-longer-present) one this call owned.
+                var isAmbiguousOutcome = e is HttpRequestException or TaskCanceledException;
+                if (isAmbiguousOutcome)
+                    _logger.LogWarning(
+                        "Enrollment for subject {Subject} failed with an ambiguous network-level error - keeping the retry-dedup reservation active for the rest of the window so a retry doesn't risk creating a duplicate MarkMonitor order",
+                        logSafeSubject);
+                else
+                    ((ICollection<KeyValuePair<string, (DateTime, TaskCompletionSource<EnrollmentResult>)>>)_recentEnrollments)
+                        .Remove(new KeyValuePair<string, (DateTime, TaskCompletionSource<EnrollmentResult>)>(dedupeKey, ownedEntry));
             }
 
             throw;
@@ -947,7 +990,7 @@ public class MarkMonitorClient : IDisposable
             {
                 _logger.LogDebug(
                     "Could not parse subject '{Subject}' as an X509 DN, falling back to string search: {EMessage}",
-                    subject, e.Message);
+                    LogSanitizer.ForLog(subject), e.Message);
             }
 
             // Fallback for a subject that isn't a fully valid DN (e.g. bare "CN=foo" with no other RDNs).
@@ -968,7 +1011,7 @@ public class MarkMonitorClient : IDisposable
     private void logCreateOrderRequest(MarkMonitorCreateOrderRequest request)
     {
         _logger.MethodEntry();
-        _logger.LogTrace("CommonName: {CommonName}", request.Cert.CommonName);
+        _logger.LogTrace("CommonName: {CommonName}", LogSanitizer.ForLog(request.Cert.CommonName));
         _logger.LogTrace("OrganizationId: {OrganizationId}", request.OrganizationId);
         _logger.LogTrace("GroupId: {GroupId}", request.GroupId);
         _logger.LogTrace("CertType: {CertType}", request.CertType);

@@ -73,7 +73,15 @@ public sealed class FakeHttpMessageHandler : HttpMessageHandler
             factory = route.Responses.Count > 1 ? route.Responses.Dequeue() : route.Responses.Peek();
         }
 
-        return await factory(request);
+        // A real HttpMessageHandler observes the cancellation token itself - honor it here too, so a
+        // test can exercise a caller's cancellation-propagation behavior against a route (e.g. one
+        // registered via WhenGated) that would otherwise hang forever.
+        var responseTask = factory(request);
+        var cancellationTask = Task.Delay(Timeout.Infinite, cancellationToken);
+        var completed = await Task.WhenAny(responseTask, cancellationTask);
+        if (completed == cancellationTask)
+            throw new TaskCanceledException("The fake request was cancelled.", null, cancellationToken);
+        return await responseTask;
     }
 
     public static bool Is(HttpRequestMessage req, string method, string pathFragment) =>

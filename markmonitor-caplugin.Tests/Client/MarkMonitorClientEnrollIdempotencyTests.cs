@@ -295,6 +295,37 @@ public class MarkMonitorClientEnrollIdempotencyTests
         Assert.Equal(1, OrderCreationCount(handler));
     }
 
+    [Fact]
+    public async Task
+        EnrollCertificateAsync_WhenMarkMonitorReturnsSuccessWithAnUnparsableBody_ARetryWithinTheWindowDoesNotCreateASecondOrder()
+    {
+        // Regression test: a 2xx order-create response whose body fails to deserialize used to fall
+        // through CreateCertificateOrder's generic catch as an ordinary exception - not an
+        // HttpRequestException/TaskCanceledException - so EnrollCertificateAsync's isAmbiguousOutcome
+        // check treated it as a *definite* failure and evicted the dedup reservation. But MarkMonitor
+        // had already confirmed (2xx) the order was created - stronger evidence than merely ambiguous
+        // - so a Command retry finding no reservation would have created a genuine duplicate order.
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())))
+            .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.Accepted, "not valid json"));
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+
+        await Assert.ThrowsAsync<MarkMonitorOrderCreatedButUnparsableException>(() => client.EnrollCertificateAsync(
+            SampleCsr.Pem, "CN=test.mmcertdomain.com", new Dictionary<string, string[]>(), "SslDvGeotrust",
+            new Dictionary<string, string>(), Config()));
+
+        await Assert.ThrowsAsync<MarkMonitorOrderCreatedButUnparsableException>(() => client.EnrollCertificateAsync(
+            SampleCsr.Pem, "CN=test.mmcertdomain.com", new Dictionary<string, string[]>(), "SslDvGeotrust",
+            new Dictionary<string, string>(), Config()));
+
+        Assert.Equal(1, OrderCreationCount(handler));
+    }
+
     private static async Task WaitUntil(Func<bool> condition)
     {
         var deadline = DateTime.UtcNow.AddSeconds(5);

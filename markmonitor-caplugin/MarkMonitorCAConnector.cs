@@ -293,17 +293,20 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
 
             if (client == null) throw new Exception("Error attempting to ping MarkMonitor");
 
-            // CreateAndAuthenticateClientAsync deliberately does NOT authenticate eagerly (see its own
-            // doc comment) - it just builds/caches the client wrapper. Ping's entire purpose is to
-            // actively verify connectivity/credentials right now, so force a real authentication call
-            // here rather than logging "successful" before any credential has actually been checked -
-            // that log line used to be reached unconditionally, before the real auth call (made lazily
-            // inside ListOrganizationsAsync below) had even run.
-            await client.AuthenticateAsync();
-            _logger.LogInformation("Authentication with MarkMonitor API successful");
-
             _logger.LogInformation("Attempting to list organizations");
-            var orgs = await client.ListOrganizationsAsync();
+            // limit=1: this is only an existence check (orgs.Any() below) - no need to page through
+            // every organization on the account just to confirm at least one exists.
+            var orgs = await client.ListOrganizationsAsync(0, 1);
+            // CreateAndAuthenticateClientAsync deliberately does NOT authenticate eagerly (see its own
+            // doc comment) - it just builds/caches the client wrapper. The real authentication happens
+            // lazily inside ListOrganizationsAsync above (via EnsureAuthenticatedAsync, properly
+            // serialized against every other call path by _authLock) - only log success now that it
+            // has actually completed, rather than before any credential had been checked. (A previous
+            // version of this fix called client.AuthenticateAsync() directly here to get the ordering
+            // right, but that bypassed _authLock entirely and could race a concurrent Enroll/Revoke/
+            // Synchronize call's own authentication on the same shared HttpClient - reordering instead
+            // of calling AuthenticateAsync directly avoids that race altogether.)
+            _logger.LogInformation("Authentication with MarkMonitor API successful");
 
             if (orgs == null || !orgs.Any())
                 throw new Exception("Unable to ping MarkMonitor API, or no MarkMonitor organization exist");

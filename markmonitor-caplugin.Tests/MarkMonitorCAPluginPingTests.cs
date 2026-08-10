@@ -44,4 +44,24 @@ public class MarkMonitorCAPluginPingTests
 
         await plugin.Ping();
     }
+
+    [Fact]
+    public async Task Ping_RequestsOnlyASinglePageOfOrganizations()
+    {
+        // Regression test: Ping() used to call ListOrganizationsAsync() with no limit, which fetches
+        // and accumulates every organization across every page just to check the list is non-empty -
+        // an unbounded cost that grows with account size for what's only an existence check.
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())));
+        var plugin = new MarkMonitorCAPlugin(handler.BuildClient());
+        plugin.Initialize(FakeAnyCAPluginConfigProvider.WithDefaults(), new FakeCertificateDataReader());
+
+        await plugin.Ping();
+
+        var orgRequest = Assert.Single(handler.Requests, req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"));
+        Assert.Equal("?size=1", orgRequest.RequestUri!.Query);
+    }
 }

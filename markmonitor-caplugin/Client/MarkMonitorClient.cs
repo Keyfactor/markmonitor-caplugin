@@ -921,7 +921,11 @@ public class MarkMonitorClient : IDisposable
                 // still running, a different caller may have since won a fresh reservation for the same
                 // key - an unconditional remove would delete THEIR entry instead of (the no-longer-
                 // present) one this call owned.
-                var isAmbiguousOutcome = reachedCreateOrderCall && e is HttpRequestException or TaskCanceledException;
+                // MarkMonitorOrderCreatedButUnparsableException means MarkMonitor already confirmed
+                // (2xx) the order was created - stronger than merely ambiguous - so it must never be
+                // treated as safe to evict either.
+                var isAmbiguousOutcome = reachedCreateOrderCall &&
+                    e is HttpRequestException or TaskCanceledException or MarkMonitorOrderCreatedButUnparsableException;
                 if (isAmbiguousOutcome)
                     _logger.LogWarning(
                         "Enrollment for subject {Subject} failed with an ambiguous network-level error - keeping the retry-dedup reservation active for the rest of the window so a retry doesn't risk creating a duplicate MarkMonitor order",
@@ -984,7 +988,10 @@ public class MarkMonitorClient : IDisposable
 
         if (Guid.TryParse(groupParam, out var parsedGroupId)) return parsedGroupId;
 
-        var groups = await ListGroupsAsync(0, 0, groupParam);
+        // Page size 100, not 0 (server default) - see ResolveOrganizationIdAsync's comment on the
+        // identical fuzzy-match, filter-by-exact-name pattern: a small page size costs one sequential
+        // HTTP round-trip per fuzzy match instead of one round-trip total.
+        var groups = await ListGroupsAsync(0, 100, groupParam);
         var matchedGroup = groups?.FirstOrDefault(g =>
             string.Equals(g.Name, groupParam, StringComparison.OrdinalIgnoreCase));
         if (matchedGroup != null) return Guid.Parse(matchedGroup.Id);
@@ -1111,7 +1118,23 @@ public class MarkMonitorClient : IDisposable
             _logger.LogTrace("Response content: {Content}", content);
             if (response.IsSuccessStatusCode)
             {
-                var order = JsonConvert.DeserializeObject<OrderContent>(content);
+                OrderContent order;
+                try
+                {
+                    order = JsonConvert.DeserializeObject<OrderContent>(content);
+                }
+                catch (Exception parseException)
+                {
+                    // MarkMonitor already returned a success status here - the order was definitely
+                    // created, even though its response body didn't parse - so this must be treated
+                    // as at least as ambiguous as a network-level failure (EnrollCertificateAsync's
+                    // isAmbiguousOutcome check matches on this type), not as a definite non-creation
+                    // that's safe to let a retry create a genuine duplicate order for.
+                    throw new MarkMonitorOrderCreatedButUnparsableException(
+                        "MarkMonitor returned a successful response for order creation, but its body could not be parsed",
+                        parseException);
+                }
+
                 _logger.LogInformation("Certificate order {OrderId} created", order.Id);
                 return order;
             }
@@ -1316,43 +1339,52 @@ public class MarkMonitorClient : IDisposable
         var json = JObject.Parse(jsonString);
         var errorMessages = new List<string>();
 
+        // Every value pulled out of MarkMonitor's response below is sanitized before it's woven into
+        // errorMessages - a validation API quoting back the offending value is a common pattern, and
+        // this component's own request could easily be why: e.g. a CSR-derived CommonName/SAN entry
+        // with an embedded CR/LF (CSR ASN.1 encoding doesn't prevent that). Without this, that CR/LF
+        // would forge a log entry (CWE-117) via BuildErrorString's result, despite the sanitization
+        // already applied everywhere else a requester-influenceable string reaches this component's
+        // logs. Sanitizing each value here - not the joined result - preserves the intentional
+        // Environment.NewLine separators between distinct errors below.
         // MarkMonitor 400 responses: {"validations":[{"field":"cert.csr","code":"...","message":"..."}]}
         if (json["validations"] is JArray validations)
             foreach (var validation in validations)
             {
-                var field = validation["field"]?.ToString();
-                var code = validation["code"]?.ToString();
-                var message = validation["message"]?.ToString();
+                var field = LogSanitizer.ForLog(validation["field"]?.ToString());
+                var code = LogSanitizer.ForLog(validation["code"]?.ToString());
+                var message = LogSanitizer.ForLog(validation["message"]?.ToString());
                 errorMessages.Add($"{field}: {message} ({code})");
             }
         // MarkMonitor 500 responses: {"errors":[{"code":"...","message":"..."}]}
         else if (json["errors"] is JArray errors)
             foreach (var error in errors)
             {
-                var code = error["code"]?.ToString();
-                var message = error["message"]?.ToString();
+                var code = LogSanitizer.ForLog(error["code"]?.ToString());
+                var message = LogSanitizer.ForLog(error["message"]?.ToString());
                 errorMessages.Add($"{message} ({code})");
             }
         else if (json["validation_messages"] != null)
             foreach (var validationMessage in json["validation_messages"])
             {
-                var field = validationMessage.Path;
+                var field = LogSanitizer.ForLog(validationMessage.Path);
                 var fieldErrors = (JObject)validationMessage.First;
 
                 foreach (var error in fieldErrors)
                 {
-                    var errorMessage = error.Value.ToString();
+                    var errorMessage = LogSanitizer.ForLog(error.Value.ToString());
                     errorMessages.Add($"{field}: {errorMessage}");
 
                     if (error.Key == "options")
                     {
-                        var options = string.Join(", ", error.Value.ToObject<List<string>>());
+                        var options = string.Join(", ",
+                            error.Value.ToObject<List<string>>().Select(LogSanitizer.ForLog));
                         errorMessages.Add($"{field} options: {options}");
                     }
                 }
             }
         else if (json["detail"] != null)
-            errorMessages.Add(json["detail"].ToString());
+            errorMessages.Add(LogSanitizer.ForLog(json["detail"].ToString()));
 
         if (errorMessages.Any()) return string.Join(Environment.NewLine, errorMessages);
 
@@ -1360,7 +1392,7 @@ public class MarkMonitorClient : IDisposable
         // truncate rather than dumping the full response body verbatim into an error-level log.
         const int maxLength = 200;
         var truncated = jsonString.Length > maxLength ? jsonString[..maxLength] + "... (truncated)" : jsonString;
-        return $"No recognized error format found in response: {truncated}";
+        return $"No recognized error format found in response: {LogSanitizer.ForLog(truncated)}";
     }
 
     private byte[] GetCsrBytes(string csr)
@@ -1492,6 +1524,18 @@ public class ConfigurationValidationException : Exception
     }
 
     public ConfigurationValidationException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+}
+
+/// <summary>Thrown when MarkMonitor's order-create response indicates success (2xx) but its body
+/// can't be parsed - the order was definitely created despite the failure, so EnrollCertificateAsync
+/// must treat this the same as an ambiguous network-level failure, not as a definite non-creation
+/// that's safe to let a retry duplicate.</summary>
+public class MarkMonitorOrderCreatedButUnparsableException : Exception
+{
+    public MarkMonitorOrderCreatedButUnparsableException(string message, Exception innerException)
         : base(message, innerException)
     {
     }

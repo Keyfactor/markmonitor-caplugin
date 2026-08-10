@@ -77,4 +77,36 @@ public class MarkMonitorClientEnrollLoggingTests
             m => m.Contains("Invalid DCVMethod", StringComparison.OrdinalIgnoreCase) &&
                  m.Contains("\\r\\n", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public async Task EnrollCertificateAsync_ResolvingGroupByName_RequestsAPageSizeLargeEnoughToAvoidOneRoundTripPerMatch()
+    {
+        // Regression test: ResolveGroupIdAsync used to request the server default page size (no
+        // `size=` param at all) instead of the larger page size ResolveOrganizationIdAsync already
+        // uses for the identical fuzzy-match, filter-by-exact-name pattern - risking one sequential
+        // HTTP round-trip per fuzzy-matching group instead of one round-trip total.
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())))
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/auth/v1/group"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK, """{"groups":[],"page":{"totalPages":1}}"""))
+            .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
+                    SampleOrders.OrderWithCert("33333333-3333-3333-3333-333333333333", "CREATED")));
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+
+        var productParams = new Dictionary<string, string>
+        {
+            [MarkMonitorCAPluginConfig.EnrollmentConfigConstants.MarkmonitorGroup] = "some-group"
+        };
+
+        await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", productParams, SampleConfig.Default());
+
+        var groupRequest = Assert.Single(handler.Requests, req => FakeHttpMessageHandler.Is(req, "GET", "/auth/v1/group"));
+        Assert.Contains("size=100", groupRequest.RequestUri!.Query);
+    }
 }

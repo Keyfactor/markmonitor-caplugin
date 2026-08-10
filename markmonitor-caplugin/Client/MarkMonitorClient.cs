@@ -149,9 +149,24 @@ public class MarkMonitorClient : IDisposable
             _username);
 
         _logger.LogDebug("Sending authentication request");
-        var response = await SendAndLogAsync(() => _httpClient.PostAsync(requestUrl,
-            new StringContent(JsonConvert.SerializeObject(requestBody), Encoding.UTF8, "application/json")),
-            "POST", requestUrl);
+        HttpResponseMessage response;
+        try
+        {
+            response = await SendAndLogAsync(() => _httpClient.PostAsync(requestUrl,
+                new StringContent(JsonConvert.SerializeObject(requestBody), Encoding.UTF8, "application/json")),
+                "POST", requestUrl);
+        }
+        catch (Exception e)
+        {
+            // A transport-level failure (unreachable host, timeout, TLS failure) throws before
+            // SendAndLogAsync's send() ever returns a response, so the IsSuccessStatusCode branch
+            // below - the only other place this method logs "Authentication failed" - never runs.
+            // Log it here too so this case still produces a self-contained, identity-tagged failure
+            // record instead of only a generic, identity-less log line from whichever caller's own
+            // catch block happens to receive the rethrown exception.
+            _logger.LogError("Authentication failed for {Username}: {EMessage}", _username, e.Message);
+            throw;
+        }
 
         _logger.LogDebug("Reading authentication response");
         var content = await response.Content.ReadAsStringAsync();
@@ -720,6 +735,11 @@ public class MarkMonitorClient : IDisposable
         var logSafeSubject = LogSanitizer.ForLog(subject);
         TaskCompletionSource<EnrollmentResult> ownedReservation = null;
         (DateTime ExpiresAtUtc, TaskCompletionSource<EnrollmentResult> Tcs) ownedEntry = default;
+        // Only a failure at or after the actual order-create call can mean "MarkMonitor might have
+        // created the order before we found out" - a network blip during an earlier step (org/contact/
+        // group resolution, CSR parsing) never reached that endpoint at all, so it can never have
+        // created an order and must not lock out a same-second retry for the rest of the window.
+        var reachedCreateOrderCall = false;
         try
         {
             await EnsureAuthenticatedAsync();
@@ -860,6 +880,7 @@ public class MarkMonitorClient : IDisposable
 
             _logger.LogDebug("Calling CreateCertificateOrder");
             logCreateOrderRequest(certOrder);
+            reachedCreateOrderCall = true;
             var order = await CreateCertificateOrder(certOrder);
 
             if (order == null) throw new Exception($"Failed to enroll certificate `{logSafeSubject}` with MarkMonitor");
@@ -885,20 +906,22 @@ public class MarkMonitorClient : IDisposable
             {
                 ownedReservation.SetException(e);
 
-                // A transport-level failure (timeout, dropped connection) means we genuinely don't
-                // know whether MarkMonitor actually created the order before the failure - exactly
-                // the ambiguous case this cache exists to guard against (see the class-level comment).
-                // Don't evict the reservation for that case: keep it in _recentEnrollments so a
-                // Command retry within the window is folded into this (now-faulted) reservation
-                // instead of racing ahead to create a second real order. Only evict for a definite
-                // failure - one where a response was actually received (or the request never left the
-                // process, e.g. a config/CSR-parsing error) - so a retry after a real rejection gets a
-                // fresh attempt rather than being stuck replaying this exception until the window
-                // expires. Conditional Remove, not a bare key-based one: if this reservation's own
-                // window already expired while this call was still running, a different caller may
-                // have since won a fresh reservation for the same key - an unconditional remove would
-                // delete THEIR entry instead of (the no-longer-present) one this call owned.
-                var isAmbiguousOutcome = e is HttpRequestException or TaskCanceledException;
+                // A transport-level failure (timeout, dropped connection) DURING the order-create call
+                // itself means we genuinely don't know whether MarkMonitor actually created the order
+                // before the failure - exactly the ambiguous case this cache exists to guard against
+                // (see the class-level comment). Don't evict the reservation for that case: keep it in
+                // _recentEnrollments so a Command retry within the window is folded into this (now-
+                // faulted) reservation instead of racing ahead to create a second real order. The same
+                // exception types raised by an EARLIER step (org/contact/group resolution, CSR parsing)
+                // are NOT ambiguous - reachedCreateOrderCall gates on that, since those steps never
+                // reach MarkMonitor's create-order endpoint and so can never have created an order; a
+                // retry after one of those must get a fresh attempt immediately, not be locked out for
+                // the rest of the window by an unrelated transient blip. Conditional Remove, not a bare
+                // key-based one: if this reservation's own window already expired while this call was
+                // still running, a different caller may have since won a fresh reservation for the same
+                // key - an unconditional remove would delete THEIR entry instead of (the no-longer-
+                // present) one this call owned.
+                var isAmbiguousOutcome = reachedCreateOrderCall && e is HttpRequestException or TaskCanceledException;
                 if (isAmbiguousOutcome)
                     _logger.LogWarning(
                         "Enrollment for subject {Subject} failed with an ambiguous network-level error - keeping the retry-dedup reservation active for the rest of the window so a retry doesn't risk creating a duplicate MarkMonitor order",

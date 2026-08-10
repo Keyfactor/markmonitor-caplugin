@@ -194,7 +194,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             var client = await CreateAndAuthenticateClientAsync();
 
             _logger.LogInformation("Performing an Enrollment");
-            _logger.LogTrace("CSR: {Csr}", csr);
+            _logger.LogTrace("CSR: {Csr}", LogSanitizer.ForLog(csr));
             _logger.LogTrace("Subject: {Subject}", logSafeSubject);
             _logger.LogTrace("SAN: {San}", JsonConvert.SerializeObject(san));
             _logger.LogTrace("Product ID: {ProductId}", productInfo.ProductID);
@@ -293,6 +293,13 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
 
             if (client == null) throw new Exception("Error attempting to ping MarkMonitor");
 
+            // CreateAndAuthenticateClientAsync deliberately does NOT authenticate eagerly (see its own
+            // doc comment) - it just builds/caches the client wrapper. Ping's entire purpose is to
+            // actively verify connectivity/credentials right now, so force a real authentication call
+            // here rather than logging "successful" before any credential has actually been checked -
+            // that log line used to be reached unconditionally, before the real auth call (made lazily
+            // inside ListOrganizationsAsync below) had even run.
+            await client.AuthenticateAsync();
             _logger.LogInformation("Authentication with MarkMonitor API successful");
 
             _logger.LogInformation("Attempting to list organizations");

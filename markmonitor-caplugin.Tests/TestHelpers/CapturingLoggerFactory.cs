@@ -25,9 +25,13 @@ public sealed class CapturingLoggerFactory : ILoggerFactory
         public void Dispose() => LogHandler.Factory = new NullLoggerFactory();
     }
 
-    public ConcurrentQueue<string> Messages { get; } = new();
+    public ConcurrentQueue<(LogLevel Level, string Message)> Entries { get; } = new();
 
-    public ILogger CreateLogger(string categoryName) => new CapturingLogger(Messages);
+    /// <summary>Formatted message text only, for the (more common) callers that don't need to filter
+    /// by level.</summary>
+    public IEnumerable<string> Messages => Entries.Select(e => e.Message);
+
+    public ILogger CreateLogger(string categoryName) => new CapturingLogger(Entries);
 
     public void AddProvider(ILoggerProvider provider)
     {
@@ -37,7 +41,7 @@ public sealed class CapturingLoggerFactory : ILoggerFactory
     {
     }
 
-    private sealed class CapturingLogger(ConcurrentQueue<string> messages) : ILogger
+    private sealed class CapturingLogger(ConcurrentQueue<(LogLevel Level, string Message)> entries) : ILogger
     {
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => NoopScope.Instance;
 
@@ -45,7 +49,7 @@ public sealed class CapturingLoggerFactory : ILoggerFactory
 
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter) =>
-            messages.Enqueue(formatter(state, exception));
+            entries.Enqueue((logLevel, formatter(state, exception)));
 
         private sealed class NoopScope : IDisposable
         {

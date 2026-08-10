@@ -1,8 +1,6 @@
-using System.Collections.Concurrent;
 using System.Net;
 using Keyfactor.Extensions.CAPlugin.MarkMonitor.Client;
 using Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.TestHelpers;
-using Keyfactor.Logging;
 using Microsoft.Extensions.Logging;
 
 namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.Client;
@@ -64,55 +62,23 @@ public class MarkMonitorClientEnrollIdempotencyTests
         // dedup-hit warning used to be logged before awaiting the in-flight reservation, so it could
         // never report the CARequestID the caller was actually folded into. It must now be logged
         // after the reservation resolves, and must include that CARequestID.
-        // This test's capturing factory needs (LogLevel, Message) pairs to filter to the Warning-level
-        // dedupe log specifically - TestHelpers.CapturingLoggerFactory.Install() only captures message
-        // text, so this uses its own nested factory below and restores LogHandler.Factory itself.
-        var capturingFactory = new CapturingLoggerFactory();
-        LogHandler.Factory = capturingFactory;
-        try
-        {
-            var handler = BuildHandler();
-            var client = handler.BuildClient();
-            await client.AuthenticateAsync();
+        using var _ = CapturingLoggerFactory.Install(out var capturingFactory);
 
-            var first = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
-                new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
-            var second = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
-                new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
+        var handler = BuildHandler();
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
 
-            Assert.Equal(1, OrderCreationCount(handler));
-            Assert.Equal(first.CARequestID, second.CARequestID);
+        var first = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
+        var second = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
 
-            var dedupeLog = Assert.Single(capturingFactory.Entries,
-                e => e.Level == LogLevel.Warning && e.Message.Contains("already submitted", StringComparison.Ordinal));
-            Assert.Contains(first.CARequestID, dedupeLog.Message, StringComparison.Ordinal);
-        }
-        finally
-        {
-            LogHandler.Factory = new Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory();
-        }
-    }
+        Assert.Equal(1, OrderCreationCount(handler));
+        Assert.Equal(first.CARequestID, second.CARequestID);
 
-    /// <summary>A minimal ILoggerFactory that captures formatted log messages so a test can assert on
-    /// their content, wired up via Keyfactor.Logging's LogHandler.Factory seam (the same seam other
-    /// AnyCA plugins use in tests to point logging somewhere observable).</summary>
-    private sealed class CapturingLoggerFactory : ILoggerFactory
-    {
-        public ConcurrentQueue<(LogLevel Level, string Message)> Entries { get; } = new();
-
-        public ILogger CreateLogger(string categoryName) => new CapturingLogger(Entries);
-        public void AddProvider(ILoggerProvider provider) { }
-        public void Dispose() { }
-
-        private sealed class CapturingLogger(ConcurrentQueue<(LogLevel, string)> entries) : ILogger
-        {
-            IDisposable? ILogger.BeginScope<TState>(TState state) => null;
-            public bool IsEnabled(LogLevel logLevel) => true;
-
-            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
-                Func<TState, Exception?, string> formatter) =>
-                entries.Enqueue((logLevel, formatter(state, exception)));
-        }
+        var dedupeLog = Assert.Single(capturingFactory.Entries,
+            e => e.Level == LogLevel.Warning && e.Message.Contains("already submitted", StringComparison.Ordinal));
+        Assert.Contains(first.CARequestID, dedupeLog.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -291,6 +257,41 @@ public class MarkMonitorClientEnrollIdempotencyTests
             "CN=test.mmcertdomain.com", new Dictionary<string, string[]>(), "SslDvGeotrust",
             new Dictionary<string, string>(), Config()));
 
+        Assert.Equal(1, OrderCreationCount(handler));
+    }
+
+    [Fact]
+    public async Task
+        EnrollCertificateAsync_WhenAnEarlierStepFailsWithATransientNetworkError_ARetryGetsAFreshAttemptRatherThanBeingLockedOut()
+    {
+        // Regression test: EnrollCertificateAsync used to classify ANY HttpRequestException/
+        // TaskCanceledException between winning the dedup reservation and CreateCertificateOrder
+        // completing as "ambiguous" - even one raised by an earlier step (here, organization
+        // resolution) that runs strictly before the order-create POST is ever issued and so can never
+        // have created an order. That kept the reservation active, so a same-second retry got the same
+        // stale exception replayed at it instead of a fresh attempt - a single transient blip during
+        // org lookup meant a guaranteed enrollment failure for the rest of the dedupe window, with zero
+        // risk of a duplicate order to justify it.
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .WhenAsync(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                _ => Task.FromException<HttpResponseMessage>(new HttpRequestException("Simulated connection reset")),
+                _ => Task.FromResult(FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact()))))
+            .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.Accepted,
+                    SampleOrders.OrderWithCert("11111111-1111-1111-1111-111111111111", "CREATED")));
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.EnrollCertificateAsync(SampleCsr.Pem,
+            "CN=test.mmcertdomain.com", new Dictionary<string, string[]>(), "SslDvGeotrust",
+            new Dictionary<string, string>(), Config()));
+
+        var retryResult = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config());
+
+        Assert.NotNull(retryResult);
         Assert.Equal(1, OrderCreationCount(handler));
     }
 

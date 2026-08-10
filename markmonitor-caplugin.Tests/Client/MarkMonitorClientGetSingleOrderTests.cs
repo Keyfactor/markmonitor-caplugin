@@ -85,4 +85,28 @@ public class MarkMonitorClientGetSingleOrderTests
         Assert.Null(result.Certificate);
         Assert.Null(result.RevocationDate);
     }
+
+    [Fact]
+    public async Task GetSingleOrderAsync_CalledRepeatedly_DoesNotAccumulateDuplicateAcceptHeaders()
+    {
+        // Regression test: FetchOrderAsync used to Add() an "application/json" Accept header on the
+        // shared, cached HttpClient on every call with no preceding Remove() - since Accept is a
+        // collection, not a single-value property, that appended a fresh duplicate entry per call,
+        // unboundedly growing the header list (sent on every subsequent request) for the life of the
+        // cached client. The Accept header is now set once, in the constructor.
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order/99999999-9999-9999-9999-999999999999"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrders.OrderWithCert("99999999-9999-9999-9999-999999999999", "DIGI_ISSUED")));
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+
+        for (var i = 0; i < 3; i++)
+            await client.GetSingleOrderAsync("99999999-9999-9999-9999-999999999999");
+
+        var orderRequests = handler.Requests.Where(r =>
+            FakeHttpMessageHandler.Is(r, "GET", "/certs/v1/order/99999999-9999-9999-9999-999999999999"));
+        Assert.All(orderRequests, r => Assert.Single(r.Headers.Accept));
+    }
 }

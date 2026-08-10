@@ -1,4 +1,5 @@
 ﻿using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
 using Keyfactor.AnyGateway.Extensions;
@@ -74,6 +75,12 @@ public class MarkMonitorClient : IDisposable
         }
 
         _httpClient = new HttpClient(handler);
+        // Every request this client makes wants an "application/json" Accept header, and it never
+        // changes for the client's lifetime - set it once here rather than in FetchOrderAsync, where
+        // an Add() on every call (Accept is a collection, not a single-value property) with no
+        // preceding Remove() appended a fresh duplicate entry per call, unboundedly growing the
+        // header list on this cached, long-lived HttpClient.
+        _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     }
 
     public void Dispose()
@@ -133,16 +140,22 @@ public class MarkMonitorClient : IDisposable
         };
 
         var requestUrl = $"{BaseUrl}/auth/v1/auth/authenticate";
-        _logger.LogInformation("Authenticating with MarkMonitor API at {RequestUrl}", requestUrl);
+        // Username (unlike ApiKey/Password) is not a secret - the plugin's own config schema marks
+        // it Hidden=false - and is the only field that identifies which MarkMonitor service account
+        // performed a given authentication. Log it so an auditor can reconstruct "who authenticated"
+        // from this component's own logs, including when multiple CA connector instances (each with a
+        // different service account) share one log sink.
+        _logger.LogInformation("Authenticating with MarkMonitor API at {RequestUrl} as {Username}", requestUrl,
+            _username);
 
         _logger.LogDebug("Sending authentication request");
-        var response = await _httpClient.PostAsync(requestUrl,
-            new StringContent(JsonConvert.SerializeObject(requestBody), Encoding.UTF8, "application/json"));
+        var response = await SendAndLogAsync(() => _httpClient.PostAsync(requestUrl,
+            new StringContent(JsonConvert.SerializeObject(requestBody), Encoding.UTF8, "application/json")),
+            "POST", requestUrl);
 
         _logger.LogDebug("Reading authentication response");
         var content = await response.Content.ReadAsStringAsync();
 
-        _logger.LogTrace("Authentication response code: {ResponseCode}", response.StatusCode);
         if (response.IsSuccessStatusCode)
         {
             _logger.LogDebug("Deserializing token response");
@@ -158,11 +171,11 @@ public class MarkMonitorClient : IDisposable
         else
         {
             var errMsg = BuildErrorString(content);
-            _logger.LogError("Authentication failed: {EMessage}", errMsg);
+            _logger.LogError("Authentication failed for {Username}: {EMessage}", _username, errMsg);
             throw new Exception(errMsg);
         }
 
-        _logger.LogInformation("Authentication successful");
+        _logger.LogInformation("Authentication successful for {Username}", _username);
     }
 
     public async Task<int> GetCertificateInventoryAsync(string caId, string sort, int limit,
@@ -323,7 +336,7 @@ public class MarkMonitorClient : IDisposable
                 _logger.LogTrace("Getting page \'{CurrentPage}\' of \'{Limit}\')", currentPage, limit);
 
                 _logger.LogDebug("Getting certificate orders from MarkMonitor {NextUrl}", nextUrl);
-                var response = await _httpClient.GetAsync(nextUrl, cancelToken);
+                var response = await SendAndLogAsync(() => _httpClient.GetAsync(nextUrl, cancelToken), "GET", nextUrl);
 
                 _logger.LogDebug("Reading response content");
                 var content = await response.Content.ReadAsStringAsync();
@@ -384,7 +397,7 @@ public class MarkMonitorClient : IDisposable
                 _logger.LogTrace("Getting page \'{CurrentPage}\' of \'{Limit}\')", currentPage, limit);
 
                 _logger.LogDebug("Getting organizations from MarkMonitor {NextUrl}", nextUrl);
-                var response = await _httpClient.GetAsync(nextUrl); // Pass the token here
+                var response = await SendAndLogAsync(() => _httpClient.GetAsync(nextUrl), "GET", nextUrl);
 
                 _logger.LogDebug("Reading response content");
                 var content = await response.Content.ReadAsStringAsync();
@@ -428,7 +441,7 @@ public class MarkMonitorClient : IDisposable
             await EnsureAuthenticatedAsync();
             var url = $"{BaseUrl}/certs/v1/organization/{orgId}";
             _logger.LogDebug("Getting organization from MarkMonitor {Url}", url);
-            var response = await _httpClient.GetAsync(url);
+            var response = await SendAndLogAsync(() => _httpClient.GetAsync(url), "GET", url);
             var content = await response.Content.ReadAsStringAsync();
 
             if (!response.IsSuccessStatusCode) throw new Exception(BuildErrorString(content));
@@ -468,7 +481,7 @@ public class MarkMonitorClient : IDisposable
                 if (query.Count > 0) nextUrl += "?" + string.Join("&", query);
 
                 _logger.LogDebug("Getting groups from MarkMonitor {NextUrl}", nextUrl);
-                var response = await _httpClient.GetAsync(nextUrl);
+                var response = await SendAndLogAsync(() => _httpClient.GetAsync(nextUrl), "GET", nextUrl);
 
                 var content = await response.Content.ReadAsStringAsync();
                 if (!response.IsSuccessStatusCode) throw new Exception(BuildErrorString(content));
@@ -506,10 +519,10 @@ public class MarkMonitorClient : IDisposable
         // already set it once, under _authLock, whenever the token is (re)established - every other
         // call site in this class relies on that same invariant. Setting it again here, unguarded,
         // let a concurrent FetchOrderAsync call (or a concurrent re-authentication) race writes to
-        // the shared HttpClient's Authorization header (see GitHub issue #8).
-        _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-        var response = await _httpClient.GetAsync($"{BaseUrl}/certs/v1/order/{orderId}");
+        // the shared HttpClient's Authorization header (see GitHub issue #8). The Accept header is
+        // likewise set once, in the constructor - not here on every call (see its comment there).
+        var orderUrl = $"{BaseUrl}/certs/v1/order/{orderId}";
+        var response = await SendAndLogAsync(() => _httpClient.GetAsync(orderUrl), "GET", orderUrl);
         var content = await response.Content.ReadAsStringAsync();
         if (!response.IsSuccessStatusCode) throw new Exception(BuildErrorString(content));
         return JsonConvert.DeserializeObject<OrderContent>(content);
@@ -1067,7 +1080,7 @@ public class MarkMonitorClient : IDisposable
                 JsonConvert.SerializeObject(request),
                 Encoding.UTF8, "application/json"
             );
-            var response = await _httpClient.PostAsync(url, jsonPayload);
+            var response = await SendAndLogAsync(() => _httpClient.PostAsync(url, jsonPayload), "POST", url);
             _logger.LogTrace("Response: {Response}", response);
 
             _logger.LogDebug("Reading response content");
@@ -1109,7 +1122,7 @@ public class MarkMonitorClient : IDisposable
             var url = $"{BaseUrl}/certs/v1/order/{orderId}/cancel";
             _logger.LogDebug("Cancelling certificate at {Url}", url);
             var payload = new StringContent("{}", Encoding.UTF8, "application/json");
-            var response = await _httpClient.PatchAsync(url, payload);
+            var response = await SendAndLogAsync(() => _httpClient.PatchAsync(url, payload), "PATCH", url);
 
             _logger.LogDebug("Reading response content");
             var content = await response.Content.ReadAsStringAsync();
@@ -1153,7 +1166,7 @@ public class MarkMonitorClient : IDisposable
                 Encoding.UTF8, "application/json"
             );
             _logger.LogTrace("Reissue payload: {@Payload}", jsonPayload);
-            var response = await _httpClient.PatchAsync(url, jsonPayload);
+            var response = await SendAndLogAsync(() => _httpClient.PatchAsync(url, jsonPayload), "PATCH", url);
 
             _logger.LogDebug("Reading response content");
             var content = await response.Content.ReadAsStringAsync();
@@ -1202,7 +1215,7 @@ public class MarkMonitorClient : IDisposable
             var url = $"{BaseUrl}/certs/v1/order/{orderId}/revoke";
             _logger.LogDebug("Revoking certificate at {Url}", url);
             var payload = new StringContent("{}", Encoding.UTF8, "application/json");
-            var response = await _httpClient.PatchAsync(url, payload);
+            var response = await SendAndLogAsync(() => _httpClient.PatchAsync(url, payload), "PATCH", url);
 
             _logger.LogDebug("Reading response content");
             var content = await response.Content.ReadAsStringAsync();
@@ -1258,6 +1271,21 @@ public class MarkMonitorClient : IDisposable
         {
             _authLock.Release();
         }
+    }
+
+    /// <summary>Runs an HTTP call and logs its method/URL/status code/elapsed time - none of this
+    /// class's call sites otherwise captured that response metadata (only AuthenticateAsync logged a
+    /// status code, and only at Trace), leaving no basis in this component's own logs for latency- or
+    /// status-code-based anomaly detection or vendor API call forensic reconstruction.</summary>
+    private async Task<HttpResponseMessage> SendAndLogAsync(Func<Task<HttpResponseMessage>> send, string method,
+        string url)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        var response = await send();
+        stopwatch.Stop();
+        _logger.LogInformation("{Method} {Url} -> {StatusCode} ({ElapsedMs}ms)", method, url,
+            (int)response.StatusCode, stopwatch.ElapsedMilliseconds);
+        return response;
     }
 
     private static string BuildErrorString(string jsonString)

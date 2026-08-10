@@ -61,7 +61,15 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         _logger.MethodEntry();
         _logger.LogInformation("MarkMonitorCAPlugin config baseUrl: {Config}", _config.BaseUrl);
         LogMaskedConfigValue("apiKey", _config.ApiKey);
-        LogMaskedConfigValue("apiUsername", _config.ApiUsername);
+        // Unlike apiKey/apiPassword, apiUsername is not a secret (GetPluginAnnotations marks it
+        // Hidden=false) and is the only field identifying which MarkMonitor service account this CA
+        // connector instance uses - log it plainly rather than masking it, so an auditor reviewing
+        // this component's own logs can attribute actions to a specific credential/identity, including
+        // when multiple CA connector instances (different service accounts) share one log sink.
+        if (_config.ApiUsername is { Length: > 0 })
+            _logger.LogInformation("MarkMonitorCAPlugin config apiUsername: {Config}", _config.ApiUsername);
+        else
+            _logger.LogError("MarkMonitorCAPlugin config apiUsername: NOT SET");
         LogMaskedConfigValue("apiPassword", _config.ApiPassword);
         _logger.LogInformation("MarkMonitorCAPlugin config orgName: {Config}", _config.OrgName);
         _logger.MethodExit();

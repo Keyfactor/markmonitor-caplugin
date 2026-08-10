@@ -35,7 +35,7 @@ Before installing, have these ready:
   orders.
 - The **organization** name or ID that certificates should be ordered under.
 - Keyfactor Command v12.0.0 or later.
-- Keyfactor AnyCA Gateway REST v24.2.0 or later.
+- Keyfactor AnyCA Gateway REST v25.5.0 or later.
 - Network access from the Gateway server to the MarkMonitor API, and the DigiCert root/intermediate
   CA certificates trusted on both the Gateway server and the Command server. See
   [Installation](installation) for the download link and where they go.

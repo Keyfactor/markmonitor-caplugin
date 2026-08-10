@@ -7,7 +7,7 @@
     "link_github": true,
     "update_catalog": true,
     "description": "Markmonitor plugin for the AnyCA REST Gateway framework",
-    "gateway_framework": "24.2.0",
+    "gateway_framework": "25.5.0",
     "release_dir": "markmonitor-caplugin/bin/Release",
     "release_project": "markmonitor-caplugin/markmonitor-caplugin.csproj",
     "about": {

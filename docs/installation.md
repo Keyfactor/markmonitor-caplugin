@@ -19,7 +19,7 @@ Get the plugin installed and MarkMonitor registered as a certificate authority i
 
 If you haven't already, install the Keyfactor AnyCA Gateway REST following the
 [official Keyfactor documentation](https://software.keyfactor.com/Guides/AnyCAGatewayREST/Content/AnyCAGatewayREST/InstallIntroduction.htm).
-This plugin requires **AnyCA Gateway REST v24.2.0 or later**.
+This plugin requires **AnyCA Gateway REST v25.5.0 or later**.
 
 ## 2. Trust the DigiCert issuing CA chain
 

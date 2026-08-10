@@ -60,7 +60,7 @@ supports), so issued certificates chain up to DigiCert roots.
 
 ## Compatibility
 
-The Markmonitor AnyCA Gateway REST plugin is compatible with the Keyfactor AnyCA Gateway REST 24.2.0 and later.
+The Markmonitor AnyCA Gateway REST plugin is compatible with the Keyfactor AnyCA Gateway REST 25.5.0 and later.
 
 ## Support
 The Markmonitor AnyCA Gateway REST plugin is supported by Keyfactor for Keyfactor customers. If you have a support issue, please open a support ticket via the Keyfactor Support Portal at https://support.keyfactor.com.
@@ -74,7 +74,7 @@ The Markmonitor AnyCA Gateway REST plugin is supported by Keyfactor for Keyfacto
   orders.
 - The **organization** name or ID (GUID) the certificates will be ordered under.
 - Keyfactor Command >= v12.0.0.
-- AnyCA Gateway REST >= v24.2.0.
+- AnyCA Gateway REST >= v25.5.0.
 - Network connectivity from the AnyCA Gateway host to the MarkMonitor API base URL, and trust of the
   DigiCert issuing CA chain on both the gateway host and the Command server (see
   [Gateway Registration](#gateway-registration)).

@@ -314,12 +314,19 @@ flowchart TD
     C -- Not https --> E
     C -- OK --> D{"Organization present?"}
     D -- Missing --> E
-    D -- Present --> F([Connector saved])
+    D -- Present --> G{"Authenticate with the<br/>submitted credentials"}
+    G -- Fails --> E
+    G -- Succeeds --> H{"At least one organization<br/>visible?"}
+    H -- No / fails --> E
+    H -- Yes --> F([Connector saved])
 ```
 
-This check validates the configuration fields themselves — it does not place a live call to
-MarkMonitor. Use the connector's connection test to confirm live connectivity; that test
-authenticates with MarkMonitor and confirms that at least one organization is visible.
+After the field checks above pass, the plugin also places a live call to MarkMonitor: it
+authenticates with the submitted (not yet saved) credentials and confirms at least one organization
+is visible, using a transient client built from exactly what's about to be saved — never the
+connector's already-cached client, which could be validating stale credentials. A failure at either
+step is summarized ("authentication failed" / "listing organizations failed") rather than forwarding
+the raw HTTP response, which could otherwise leak transport-layer detail to the UI.
 
 ### Order Status Mapping
 

@@ -428,6 +428,69 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         else _logger.LogDebug($"{MarkMonitorConstants.ConfigConstants.OrgName} is set");
         _logger.LogTrace("MarkMonitor Organization Name: {OrgName}", orgName);
         if (errors.Any()) ThrowValidationException(errors);
+
+        // The aggregated checks above only confirm the fields are present and well-formed - not that
+        // they're actually valid MarkMonitor credentials. Build a transient client from the submitted
+        // connectionInfo itself (never _cachedClient, which may hold stale/different creds from a
+        // previous save) so validation reflects exactly what's about to be saved. A test-injected
+        // client (see the constructor overload) is reused as-is instead, the same seam every other
+        // method in this class already relies on for testability - and it must not be disposed here,
+        // since its lifecycle belongs to whoever injected it, not to this one validation call.
+        MarkMonitorConfig tempConfig = null;
+        MarkMonitorClient tempClient = _markMonitorClientWasInjected ? Client : null;
+        try
+        {
+            if (!_markMonitorClientWasInjected)
+            {
+                var rawConfig = JsonConvert.SerializeObject(connectionInfo);
+                tempConfig = JsonConvert.DeserializeObject<MarkMonitorConfig>(rawConfig);
+                tempConfig.BaseUrl = baseURL; // the resolved effective value (blank -> the default above)
+                tempClient = new MarkMonitorClient(tempConfig.BaseUrl, tempConfig.ApiKey, tempConfig.ApiUsername,
+                    tempConfig.ApiPassword, true, timeoutSeconds: tempConfig.TimeoutSeconds);
+            }
+
+            try
+            {
+                await tempClient.AuthenticateAsync();
+            }
+            catch (Exception e)
+            {
+                // The real exception/response detail is deliberately not forwarded to the UI - it may
+                // carry HTTP response fragments, headers, or other transport-layer detail.
+                _logger.LogError("CA connection live validation failed during authentication: {EMessage}",
+                    e.Message);
+                throw new AnyCAValidationException(
+                    "Authentication failed with the submitted MarkMonitor credentials. See gateway logs for details.");
+            }
+
+            try
+            {
+                var orgs = await tempClient.ListOrganizationsAsync(0, 1);
+                if (orgs == null || orgs.Count == 0)
+                    throw new Exception("No MarkMonitor organizations are visible to the submitted credentials");
+            }
+            catch (Exception e)
+            {
+                _logger.LogError("CA connection live validation failed while listing organizations: {EMessage}",
+                    e.Message);
+                throw new AnyCAValidationException(
+                    "Authenticated with MarkMonitor, but listing organizations failed. See gateway logs for details.");
+            }
+        }
+        finally
+        {
+            if (!_markMonitorClientWasInjected) tempClient?.Dispose();
+            // Best-effort credential scrubbing: blank out the secret fields on the transient config so
+            // they aren't reachable from this now-unreferenced object after this method returns. Not a
+            // hard guarantee (the runtime may already have copied them elsewhere), but removes the most
+            // obvious post-validation reference chain - certinext's pattern.
+            if (tempConfig != null)
+            {
+                tempConfig.ApiKey = string.Empty;
+                tempConfig.ApiPassword = string.Empty;
+            }
+        }
+
         _logger.LogInformation("CA Connection Info validated successfully");
         _logger.MethodExit();
     }
@@ -442,6 +505,13 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
     public Task ValidateProductInfo(EnrollmentProductInfo productInfo, Dictionary<string, object> connectionInfo)
     {
         _logger.MethodEntry();
+
+        // Unlike MarkmonitorContact/MarkmonitorGroup above, this is a cheap static check - no live
+        // MarkMonitor call - so there's no tradeoff in failing fast on it at template-save time.
+        if (!Enum.TryParse<CertOrderTypes>(productInfo.ProductID, out _))
+            throw new AnyCAValidationException(
+                $"'{LogSanitizer.ForLog(productInfo.ProductID)}' is not a valid MarkMonitor product ID. Valid values are: {string.Join(", ", Enum.GetNames(typeof(CertOrderTypes)))}");
+
         _logger.LogInformation("Product info validated successfully");
         _logger.MethodExit();
         return Task.CompletedTask;

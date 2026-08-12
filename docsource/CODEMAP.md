@@ -38,7 +38,7 @@ MarkMonitor's SSL API is backed by **DigiCert** (the only `provider` it supports
 
 | File | Responsibility |
 |---|---|
-| `MarkMonitorCAConnector.cs` | `IAnyCAPlugin` entry point. Methods the Gateway host calls: `Initialize`, `Enroll`, `Revoke`, `Synchronize`, `GetSingleRecord`, `Ping`, `ValidateCAConnectionInfo`, `ValidateProductInfo` (no-op), `GetProductIds`, `GetCAConnectorAnnotations` / `GetTemplateParameterAnnotations`. Holds the deserialized config and one lazily-built, cached `MarkMonitorClient` (`CreateAndAuthenticateClientAsync`). Contains the `RenewOrReissue` → revoke-prior logic and the `EnsureOrgNameConfigured` guard. |
+| `MarkMonitorCAConnector.cs` | `IAnyCAPlugin` entry point. Methods the Gateway host calls: `Initialize`, `Enroll`, `Revoke`, `Synchronize`, `GetSingleRecord`, `Ping`, `ValidateCAConnectionInfo` (field checks, then a live auth + org-list call via a transient client - never `_cachedClient`), `ValidateProductInfo` (cheap static `ProductID` enum check only - contact/group stay a no-op), `GetProductIds`, `GetCAConnectorAnnotations` / `GetTemplateParameterAnnotations`. Holds the deserialized config and one lazily-built, cached `MarkMonitorClient` (`CreateAndAuthenticateClientAsync`). Contains the `RenewOrReissue` → revoke-prior logic and the `EnsureOrgNameConfigured` guard. |
 | `Client/MarkMonitorClient.cs` | The MarkMonitor REST HTTP client. Owns: bearer-token auth (`X-API-KEY` header + username/password → token, cached with 30s early-expiry, double-checked locking); list pagination (`MarkMonitorPage.TotalPages`); CSR PEM/DER handling via BouncyCastle; ECC named-curve validation; the process-local enrollment dedup cache (5-min, keyed org\|product\|subject\|csr); `MarkMonitorCertificateStatusToCAStatus` mapping; `BuildErrorString` error parsing; org/contact/group resolution; `SendWithRetryAsync` (3-attempt retry with jittered exponential backoff on network failures/timeouts and 5xx/429, honoring `Retry-After` on 429 - **not** used for the order-create POST or the reissue PATCH, both of which risk creating a duplicate billable resource on an ambiguous failure); `HttpClient.Timeout` from the `TimeoutSeconds` config field (default 120s). |
 | `MarkMonitorCAPluginConfig.cs` | CA-connection + enrollment-parameter schema, UI annotations/defaults, and canonical field-name constants: `ConfigConstants` (ApiKey, Username, Password=`"Password"`, BaseUrl, OrgId=`"OrgId"`, Enabled, TimeoutSeconds) and `EnrollmentConfigConstants` (AdditionalEmails, MarkmonitorGroup, MarkmonitorContact, DCVMethod, comments, locale, provider). Also `ConfigurationValidationException`. |
 | `MarkMonitorConfig.cs` | The deserialized CA-connection config type used at runtime. |
@@ -106,8 +106,14 @@ pending set (`DIGI_PENDING`/`DIGI_PROCESSING`/`DIGI_REISSUE_PENDING`/`DIGI_WAITI
   silently resolve to the wrong org — [#9](../../issues/9)).
 - **Order IDs** are validated as GUIDs before being interpolated into URLs.
 - **Revocation reason** cannot be forwarded to MarkMonitor (no schema field).
-- **`ValidateProductInfo` is a no-op** — contact/group are resolved and defaulted at enroll time, not
-  validated at template save.
+- **`ValidateProductInfo`'s contact/group handling stays a no-op** — resolved and defaulted at enroll
+  time, not validated at template save (a deliberate tradeoff documented in the method's own
+  comment). It does now reject an unparseable `ProductID` (a cheap static enum check, no live call).
+- **`ValidateCAConnectionInfo` makes a live MarkMonitor call** (authenticate + list one organization)
+  after its field checks pass, via a transient client built from the connectionInfo being saved -
+  never `_cachedClient`. A constructor-injected client (the same test seam every other method uses)
+  is reused as-is and left undisposed, rather than building a second transient one, so tests don't
+  need a live API.
 
 ## Build / test / deploy
 

@@ -26,6 +26,13 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- `ValidateCAConnectionInfo` now places a live call to MarkMonitor (authenticate, then list one
+  organization) after its existing field checks pass, using a transient client built from exactly
+  the credentials being saved - a wrong API key or password is now caught at connector-save time
+  instead of surfacing only on the first real enroll/revoke/sync. Failures are summarized
+  ("authentication failed" / "listing organizations failed") rather than forwarding the raw HTTP
+  response. `ValidateProductInfo` now also rejects a `ProductID` that doesn't parse to a
+  `CertOrderTypes` member, listing the valid values.
 - Multi-SAN enrollments now issue with every requested DNS SAN instead of just the CN - `Enroll`'s
   `san` dictionary (and any SAN extension embedded directly in the submitted CSR) is now wired into
   the MarkMonitor order's `dnsNames` field. MarkMonitor issues CN ∪ `dnsNames` and does not honor a

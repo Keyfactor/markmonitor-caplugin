@@ -1,47 +1,111 @@
 {
-  "$schema": "https://keyfactor.github.io/integration-manifest-schema.json",
-  "integration_type": "anyca-plugin",
-  "name": "MarkMonitor AnyCA REST Gateway Plugin",
-  "status": "pilot",
-  "support_level": "kf-supported",
-  "link_github": true,
-  "update_catalog": true,
-  "description": "MarkMonitor plugin for the AnyCA REST Gateway framework",
-  "gateway_framework": "24.2.0",
-  "release_dir": "markmonitor-cagateway/bin/Release/net6.0",
-  "about": {
-    "carest": {
-      "ca_plugin_config": [
-        {
-          "name": "ClientSecret",
-          "description": "Client Secret for Generating Bearer Token"
-        },
-        {
-          "name": "MarkMonitorApiClient",
-          "description": "MarkMonitor API Client Name"
-        },
-        {
-          "name": "BaseUrl",
-          "description": "Base Url for MarkMonitor API such as https://url:8443"
-        },
-        {
-          "name": "MarkMonitorCaId",
-          "description": "MarkMonitor Ca Id.  Example would be 2. In MarkMonitor Onboard UI, click edit on the Ca and look at the id in the Url."
+    "$schema": "https://keyfactor.github.io/integration-manifest-schema.json",
+    "integration_type": "anyca-plugin",
+    "name": "Markmonitor AnyCA REST Gateway Plugin",
+    "status": "pilot",
+    "support_level": "kf-supported",
+    "link_github": true,
+    "update_catalog": true,
+    "description": "Markmonitor plugin for the AnyCA REST Gateway framework",
+    "gateway_framework": "25.5.0",
+    "release_dir": "markmonitor-caplugin/bin/Release",
+    "release_project": "markmonitor-caplugin/markmonitor-caplugin.csproj",
+    "about": {
+        "carest": {
+            "ca_plugin_config": [
+                {
+                    "name": "ApiKey",
+                    "description": "The API Key for the MarkMonitor API"
+                },
+                {
+                    "name": "Username",
+                    "description": "Username for the MarkMonitor API service account"
+                },
+                {
+                    "name": "Password",
+                    "description": "Password for the MarkMonitor API service account"
+                },
+                {
+                    "name": "BaseUrl",
+                    "description": "The Base URL for the MarkMonitor API - Usually either https://api.markmonitor.com"
+                },
+                {
+                    "name": "OrgId",
+                    "description": "The name of the MarkMonitor Organization to use for the API calls (ex: MarkMonitor). You can also use the Organization ID in GUID format."
+                },
+                {
+                    "name": "Enabled",
+                    "description": "Flag to Enable or Disable gateway functionality. Disabling is primarily used to allow creation of the CA prior to configuration information being available."
+                },
+                {
+                    "name": "TimeoutSeconds",
+                    "description": "The HTTP request timeout, in seconds, for calls to the MarkMonitor API. Default is 120."
+                },
+                {
+                    "name": "PageSize",
+                    "description": "The number of certificate orders requested per page during synchronization (1-500). Default is 100."
+                },
+                {
+                    "name": "ForceCompleteSync",
+                    "description": "When true, bypasses the skip-unchanged optimization and re-emits every order on every synchronization. Default is false."
+                },
+                {
+                    "name": "PickupRetries",
+                    "description": "How many times to poll a freshly-created order for issuance before returning it in its still-pending state. 0 disables polling. Default is 5."
+                },
+                {
+                    "name": "PickupDelaySeconds",
+                    "description": "The delay, in seconds, between issuance pickup polls. Default is 10."
+                }
+            ],
+            "enrollment_config": [
+                {
+                    "name": "AdditionalEmails",
+                    "description": "List of 0 or more comma separated email addresses to send the certificate to via email after generation."
+                },
+                {
+                    "name": "MarkmonitorGroup",
+                    "description": "The name or GUID of a Markmonitor group to use for the certificate request."
+                },
+                {
+                    "name": "MarkmonitorContact",
+                    "description": "The name or GUID of a Markmonitor contact to use for the certificate request. Will use default Markmonitor organization contact if not specified."
+                },
+                {
+                    "name": "DCVMethod",
+                    "description": "The method to use for Domain Control Validation (DCV). Valid values are EMAIL, DNS_CNAME_TOKEN, HTTP_TOKEN, DNS_TXT_TOKEN. Default is EMAIL."
+                },
+                {
+                    "name": "comments",
+                    "description": "Comments to attach to the MarkMonitor order. Default is \"Requested via Keyfactor Command\"."
+                },
+                {
+                    "name": "locale",
+                    "description": "Locale to use for the MarkMonitor order. Default is \"en\"."
+                },
+                {
+                    "name": "provider",
+                    "description": "The certificate provider to use for the order. Default is \"DIGICERT\" (currently the only provider MarkMonitor's API supports)."
+                },
+                {
+                    "name": "RenewalWindowDays",
+                    "description": "For a RenewOrReissue enrollment, how many days before its expiration a prior certificate must be within before it is revoked after being replaced. Outside this window, the prior certificate is left unrevoked and the request is treated like a plain new issuance. Default is 90."
+                }
+            ],
+            "product_ids": [
+                "SslOvBasic",
+                "SslEvBasic",
+                "SslDvGeotrust",
+                "SslDvThawte",
+                "SslOvThawteWebserver",
+                "SslEvThawteWebserver",
+                "SslOvGeotrustTruebizid",
+                "SslEvGeotrustTruebizid",
+                "SslOvSecuresite",
+                "SslEvSecuresite",
+                "SslOvSecuresitePro",
+                "SslEvSecuresitePro"
+            ]
         }
-      ],
-      "enrollment_config": [
-        {
-          "name": "NumberOfDaysValid",
-          "description": "OPTIONAL: The number of days of validity to use when requesting certs. If not provided, default is 365."
-        }
-      ],
-      "product_ids": [
-        "ca",
-        "code-signing",
-        "https",
-        "tls-client",
-        "trusted"
-      ]
     }
-  }
 }

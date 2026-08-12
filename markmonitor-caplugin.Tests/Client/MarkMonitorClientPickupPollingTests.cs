@@ -70,6 +70,27 @@ public class MarkMonitorClientPickupPollingTests
     }
 
     [Fact]
+    public async Task EnrollCertificateAsync_WhenTheBudgetExhaustsWithStatusIssuedButNoCertBodyYet_ReportsInProcessNotAFalseGenerated()
+    {
+        // Regression test: if MarkMonitor's status flips to issued a moment before the cert body is
+        // actually populated, IsPollingComplete correctly keeps polling (it requires both) - but if
+        // the budget exhausts at exactly that moment, the order comes back with an "issued" status
+        // and a null cert. Reporting GENERATED with Certificate=null would be an internally
+        // inconsistent result no caller expects for a successful enrollment.
+        var handler = BuildHandlerWithOrgAndCreate()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", $"/certs/v1/order/{OrderId}"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK, SampleOrders.OrderIssuedWithoutCertBody(OrderId)));
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+
+        var result = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config(pickupRetries: 3));
+
+        Assert.Equal((int)EndEntityStatus.INPROCESS, result.Status);
+        Assert.Null(result.Certificate);
+    }
+
+    [Fact]
     public async Task EnrollCertificateAsync_WithPickupRetriesZero_SkipsPollingEntirely()
     {
         var handler = BuildHandlerWithOrgAndCreate();
@@ -81,6 +102,29 @@ public class MarkMonitorClientPickupPollingTests
 
         Assert.Equal((int)EndEntityStatus.EXTERNALVALIDATION, result.Status);
         Assert.Equal(0, OrderFetchCount(handler));
+    }
+
+    [Fact]
+    public async Task EnrollCertificateAsync_WhenTheCreateOrderResponseItselfIsIssuedWithoutACertBody_ReportsInProcessNotAFalseGenerated()
+    {
+        // Same consistency check applies even with polling disabled entirely (PickupRetries=0) - the
+        // inconsistency can in principle come straight from the order-create response itself, not
+        // only from a poll response.
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())))
+            .When(req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.Accepted, SampleOrders.OrderIssuedWithoutCertBody(OrderId)));
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+
+        var result = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(), Config(pickupRetries: 0));
+
+        Assert.Equal((int)EndEntityStatus.INPROCESS, result.Status);
+        Assert.Null(result.Certificate);
     }
 
     [Fact]

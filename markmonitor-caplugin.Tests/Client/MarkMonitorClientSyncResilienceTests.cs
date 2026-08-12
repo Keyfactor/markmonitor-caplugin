@@ -235,4 +235,55 @@ public class MarkMonitorClientSyncResilienceTests
 
         Assert.Equal(1, count);
     }
+
+    [Fact]
+    public async Task GetCertificateInventoryAsync_WithAPageLargerThanTheConcurrencyLimit_CountsEveryOutcomeExactlyOnce()
+    {
+        // Regression test for concurrent per-record processing (records within a page are now
+        // processed with bounded concurrency instead of one at a time): a page bigger than the
+        // concurrency limit (10) exercises multiple concurrent batches, so this asserts the
+        // Interlocked counters aren't racing/double-counting/dropping increments under that load.
+        var reader = new FakeCertificateDataReader();
+        var records = new List<string>();
+        var emittedIds = new List<string>();
+        var skippedIds = new List<string>();
+        var erroredIds = new List<string>();
+
+        for (var i = 0; i < 15; i++)
+        {
+            var id = Guid.NewGuid().ToString();
+            emittedIds.Add(id);
+            records.Add(SampleOrders.OrderWithCert(id, "DIGI_ISSUED"));
+        }
+        for (var i = 0; i < 15; i++)
+        {
+            var id = Guid.NewGuid().ToString();
+            skippedIds.Add(id);
+            reader.RequestIdToStatus[id] = (int)EndEntityStatus.GENERATED;
+            reader.ExpirationDateByRequestId[id] = DateTime.Parse("2027-01-01T00:00:00Z").ToUniversalTime();
+            records.Add(SampleOrders.OrderWithCert(id, "DIGI_ISSUED"));
+        }
+        for (var i = 0; i < 10; i++)
+        {
+            var id = Guid.NewGuid().ToString();
+            erroredIds.Add(id);
+            reader.ThrowForRequestIds.Add(id);
+            records.Add(SampleOrders.OrderWithCert(id, "DIGI_ISSUED"));
+        }
+
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK, SampleOrders.OrdersPage(string.Join(",", records))));
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+        var buffer = new BlockingCollection<AnyCAPluginCertificate>();
+
+        var count = await client.GetCertificateInventoryAsync("", "", 100, buffer, CancellationToken.None, reader);
+
+        Assert.Equal(15, count);
+        var collectedIds = buffer.ToList().Select(c => c.CARequestID).ToHashSet();
+        Assert.Equal(new HashSet<string>(emittedIds), collectedIds);
+        Assert.DoesNotContain(collectedIds, id => skippedIds.Contains(id) || erroredIds.Contains(id));
+    }
 }

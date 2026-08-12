@@ -1,9 +1,11 @@
 using System.Net;
 using Keyfactor.AnyGateway.Extensions;
 using Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests.TestHelpers;
+using Microsoft.Extensions.Logging;
 
 namespace Keyfactor.Extensions.CAPlugin.MarkMonitor.Tests;
 
+[Collection(LogHandlerFactoryCollection.Name)]
 public class MarkMonitorCAPluginValidateConnectionInfoTests
 {
     private static Dictionary<string, object> ValidConnectionInfo(string baseUrl = "https://api.markmonitor.com") =>
@@ -129,6 +131,27 @@ public class MarkMonitorCAPluginValidateConnectionInfoTests
             plugin.ValidateCAConnectionInfo(connectionInfo));
 
         Assert.Contains("could not be parsed", ex.Message);
+    }
+
+    [Fact]
+    public async Task ValidateCAConnectionInfo_WithAMalformedNumericFieldContainingCrlf_DoesNotForgeALogLine()
+    {
+        // Regression test: the deserialization-failure catch block logged the raw
+        // JsonSerializationException message unsanitized - that message echoes back the rejected
+        // value verbatim, so an embedded CR/LF in a submitted field could forge a fake log line
+        // (CWE-117), the exact class of input every other caller-supplied value in this codebase is
+        // sanitized against before logging.
+        using var _ = CapturingLoggerFactory.Install(out var capturingFactory);
+        var plugin = new MarkMonitorCAPlugin();
+        var connectionInfo = ValidConnectionInfo();
+        connectionInfo[MarkMonitorCAPluginConfig.ConfigConstants.PageSize] = "bad\r\nFAKE LOG LINE: admin logged in";
+
+        await Assert.ThrowsAsync<AnyCAValidationException>(() => plugin.ValidateCAConnectionInfo(connectionInfo));
+
+        Assert.DoesNotContain(capturingFactory.Entries,
+            e => e.Message.Contains('\n') || e.Message.Contains('\r'));
+        Assert.Contains(capturingFactory.Entries,
+            e => e.Level == LogLevel.Error && e.Message.Contains("FAKE LOG LINE", StringComparison.Ordinal));
     }
 
     [Fact]

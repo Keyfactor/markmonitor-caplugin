@@ -249,11 +249,16 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
     /// PriorCertSN is missing or can't be resolved - a failure to revoke the old certificate should
     /// not fail delivery of the new one.
     /// </summary>
+    /// <summary>Case-insensitive enrollment product-parameter lookup, matching every other
+    /// template-parameter lookup in this file (Command's parameter keys aren't guaranteed to arrive
+    /// in any particular casing).</summary>
+    private static string GetProductParameter(Dictionary<string, string> productParameters, string key) =>
+        productParameters?.FirstOrDefault(kv => string.Equals(kv.Key, key, StringComparison.OrdinalIgnoreCase)).Value;
+
     private async Task RevokePriorCertificateIfPresentAsync(MarkMonitorClient client,
         EnrollmentProductInfo productInfo, string subject, string newCaRequestId)
     {
-        var priorCertSn = productInfo.ProductParameters?
-            .FirstOrDefault(kv => string.Equals(kv.Key, "PriorCertSN", StringComparison.OrdinalIgnoreCase)).Value;
+        var priorCertSn = GetProductParameter(productInfo.ProductParameters, "PriorCertSN");
         // PriorCertSN is a caller-supplied enrollment product parameter - log a CR/LF-escaped copy so
         // an embedded CR/LF can't forge a fake log line (CWE-117), matching every other caller-supplied
         // value in this file.
@@ -318,9 +323,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
     /// logs that their configured window was never actually applied.</summary>
     private int ParseRenewalWindowDays(Dictionary<string, string> productParameters)
     {
-        var raw = productParameters?
-            .FirstOrDefault(kv => string.Equals(kv.Key, "RenewalWindowDays", StringComparison.OrdinalIgnoreCase))
-            .Value;
+        var raw = GetProductParameter(productParameters, "RenewalWindowDays");
         if (string.IsNullOrWhiteSpace(raw)) return DefaultRenewalWindowDays;
 
         if (int.TryParse(raw, out var parsed) && parsed > 0) return parsed;
@@ -482,9 +485,12 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
                     // one of the Number-typed fields) can fail deserialization here - caught and
                     // sanitized like every other failure mode in this method, rather than letting a
                     // raw JsonSerializationException (which can embed field paths/values) escape
-                    // unlogged.
+                    // unlogged. e.Message itself echoes the rejected connectionInfo value verbatim
+                    // (e.g. "Could not convert string to integer: <value>") - sanitized here too, so
+                    // an embedded CR/LF in that value can't forge a fake log line (CWE-117), matching
+                    // every other caller-supplied value logged in this file.
                     _logger.LogError("CA connection validation failed while parsing the submitted configuration: {EMessage}",
-                        e.Message);
+                        LogSanitizer.ForLog(e.Message));
                     throw new AnyCAValidationException(
                         "The submitted configuration could not be parsed. See gateway logs for details.");
                 }

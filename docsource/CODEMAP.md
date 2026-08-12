@@ -58,7 +58,11 @@ MarkMonitor's SSL API is backed by **DigiCert** (the only `provider` it supports
   retried, unlike most other GETs - see `Client/MarkMonitorClient.cs` above) up to `PickupRetries`
   times (every `PickupDelaySeconds`) for a product whose DCV/approval resolves quickly, stopping
   early on either issuance or a terminal non-issued status; `PickupRetries=0` (not the default)
-  skips polling entirely. `RenewOrReissue` places a new order then revokes the prior cert (via
+  skips polling entirely. Whatever order comes back (from polling or straight from order creation),
+  `EnrollCertificateAsync` downgrades a `GENERATED`-mapped status with a still-null cert body to
+  `INPROCESS` before returning - MarkMonitor's status can flip to issued a moment before the cert
+  body itself is populated, and reporting a false `GENERATED` with no certificate would be an
+  internally inconsistent result. `RenewOrReissue` places a new order then revokes the prior cert (via
   `PriorCertSN` → `ICertificateDataReader`), but only when that prior cert's resolvable expiration
   date is within its `RenewalWindowDays` template param (default 90) - if it's resolvable and
   outside the window, the prior cert is left unrevoked and the request behaves like a plain new
@@ -86,7 +90,11 @@ MarkMonitor's SSL API is backed by **DigiCert** (the only `provider` it supports
   after of that round-trip; `ForceCompleteSync` (config) or Command's own `fullSync` flag bypasses
   the optimization entirely. A bad individual record is logged + counted + skipped rather than
   aborting the sync, but an error rate over 25% (once ≥50 records observed) aborts the whole sync as
-  a circuit breaker.
+  a circuit breaker (checked per-record via `Interlocked` counters, but only enforced at the end of
+  the current page, not the instant it crosses - see below). Records within one page are processed
+  with bounded concurrency (`Parallel.ForEachAsync`, max 10 at a time) rather than sequentially,
+  since the skip-unchanged check's local `ICertificateDataReader` round-trips would otherwise
+  serialize (and block the next MarkMonitor page fetch behind) a large sync's entire record count.
 
 ### MarkMonitor endpoints
 

@@ -254,6 +254,13 @@ public class MarkMonitorClient : IDisposable
     private const int SyncErrorRateMinimumSampleSize = 50;
     private const double SyncErrorRateThreshold = 0.25;
 
+    // Each record's sync processing is an independent, order-scoped ICertificateDataReader lookup
+    // with no shared mutable state besides the thread-safe certificatesBuffer and the Interlocked
+    // counters in GetCertificateInventoryAsync - serializing them one at a time (as originally
+    // shipped) was pure added latency at scale with nothing to protect. Bounded, not unlimited, so a
+    // single page (up to PageSize=500 records) doesn't fire off hundreds of concurrent local calls.
+    private const int MaxConcurrentRecordsPerPage = 10;
+
     private enum SyncRecordOutcome
     {
         Emitted,
@@ -283,48 +290,65 @@ public class MarkMonitorClient : IDisposable
             await ListCertificateOrdersAsync(0, caId, sort, limit, cancelToken, async page =>
             {
                 _logger.LogDebug("Retrieved a page of '{CertificateCount}' certificate orders", page.Count);
-                foreach (var certificateDetail in page)
-                {
-                    totalObserved++;
-                    try
-                    {
-                        switch (await ProcessOneInventoryRecordAsync(certificateDetail, certificatesBuffer,
-                                    certificateDataReader, forceCompleteSync, cancelToken))
-                        {
-                            case SyncRecordOutcome.Emitted:
-                                emittedCount++;
-                                break;
-                            case SyncRecordOutcome.SkippedNotReady:
-                                skippedNotReadyCount++;
-                                break;
-                            case SyncRecordOutcome.SkippedUnchanged:
-                                skippedUnchangedCount++;
-                                break;
-                        }
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        throw;
-                    }
-                    catch (Exception e)
-                    {
-                        // A single bad record (bad status string, bad date, null fields) must not abort
-                        // the rest of the page/sync - certinext's model. The error-rate circuit breaker
-                        // below is what catches this becoming systemic rather than a one-off.
-                        erroredCount++;
-                        _logger.LogError(
-                            "Error processing certificate order {CertificateId} during synchronization - skipping it and continuing: {EMessage}",
-                            certificateDetail?.Id, e.Message);
-                    }
 
-                    if (totalObserved >= SyncErrorRateMinimumSampleSize)
+                // Thrown outside the Parallel.ForEachAsync body below (never from inside it) so it
+                // always propagates as a plain Exception, not wrapped in an AggregateException - the
+                // only exception type a lambda body here can actually throw is OperationCanceledException
+                // (on real cancellation); every per-record processing failure is caught and counted
+                // internally instead of escaping the lambda.
+                Exception breakerException = null;
+                await Parallel.ForEachAsync(page,
+                    new ParallelOptions { CancellationToken = cancelToken, MaxDegreeOfParallelism = MaxConcurrentRecordsPerPage },
+                    async (certificateDetail, ct) =>
                     {
-                        var errorRate = (double)erroredCount / totalObserved;
-                        if (errorRate > SyncErrorRateThreshold)
-                            throw new Exception(
-                                $"Aborting synchronization: {erroredCount} of {totalObserved} records processed so far have failed ({errorRate:P0}), exceeding the {SyncErrorRateThreshold:P0} error-rate threshold");
-                    }
-                }
+                        var observed = Interlocked.Increment(ref totalObserved);
+                        try
+                        {
+                            switch (await ProcessOneInventoryRecordAsync(certificateDetail, certificatesBuffer,
+                                        certificateDataReader, forceCompleteSync, ct))
+                            {
+                                case SyncRecordOutcome.Emitted:
+                                    Interlocked.Increment(ref emittedCount);
+                                    break;
+                                case SyncRecordOutcome.SkippedNotReady:
+                                    Interlocked.Increment(ref skippedNotReadyCount);
+                                    break;
+                                case SyncRecordOutcome.SkippedUnchanged:
+                                    Interlocked.Increment(ref skippedUnchangedCount);
+                                    break;
+                            }
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
+                        catch (Exception e)
+                        {
+                            // A single bad record (bad status string, bad date, null fields) must not
+                            // abort the rest of the page/sync - certinext's model. The error-rate
+                            // circuit breaker below is what catches this becoming systemic rather than
+                            // a one-off.
+                            Interlocked.Increment(ref erroredCount);
+                            _logger.LogError(
+                                "Error processing certificate order {CertificateId} during synchronization - skipping it and continuing: {EMessage}",
+                                certificateDetail?.Id, e.Message);
+                        }
+
+                        if (observed >= SyncErrorRateMinimumSampleSize)
+                        {
+                            var errorRate = (double)Volatile.Read(ref erroredCount) / observed;
+                            if (errorRate > SyncErrorRateThreshold)
+                                Interlocked.CompareExchange(ref breakerException, new Exception(
+                                    $"Aborting synchronization: {erroredCount} of {observed} records processed so far have failed ({errorRate:P0}), exceeding the {SyncErrorRateThreshold:P0} error-rate threshold"),
+                                    null);
+                        }
+                    });
+
+                // Deliberately checked after the whole page finishes rather than cancelling
+                // in-flight/queued iterations the instant the threshold crosses - the breaker's own
+                // purpose (catching systemic failure, not enforcing an exact cutoff record) tolerates
+                // finishing out the current page, bounded by PageSize, before aborting.
+                if (breakerException != null) throw breakerException;
             });
 
             _logger.LogInformation(
@@ -1138,11 +1162,28 @@ public class MarkMonitorClient : IDisposable
             // too, rather than always seeing the original pending status.
             order = await PollForIssuanceAsync(order, config);
 
+            var certificate = order.Cert?.EndEntityCert;
+            var status = MarkMonitorCertificateStatusToCAStatus(order);
+            if (status == (int)EndEntityStatus.GENERATED && certificate == null)
+            {
+                // MarkMonitor's status can flip to issued a moment before the cert body itself is
+                // populated - PollForIssuanceAsync's own IsPollingComplete check already accounts for
+                // this (it requires both), but if the poll budget is exhausted at exactly that
+                // moment, the order comes back here with an "issued" status and no cert. Reporting
+                // GENERATED with a null Certificate would be an internally inconsistent result no
+                // caller expects for a successful enrollment - INPROCESS (the same status used for
+                // every other pending state) is the honest signal that there's nothing to deliver yet.
+                _logger.LogWarning(
+                    "Order {CARequestID} reports status {OrderStatus} (maps to GENERATED) but its certificate body is not yet populated - reporting INPROCESS instead of a false GENERATED",
+                    order.Id, order.Status);
+                status = (int)EndEntityStatus.INPROCESS;
+            }
+
             var enrollmentResult = new EnrollmentResult
             {
                 CARequestID = order.Id,
-                Certificate = order.Cert?.EndEntityCert,
-                Status = MarkMonitorCertificateStatusToCAStatus(order),
+                Certificate = certificate,
+                Status = status,
                 StatusMessage = "MarkMonitor order status: " + order.Status
             };
             ownedReservation.SetResult(enrollmentResult);

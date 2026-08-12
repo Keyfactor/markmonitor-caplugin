@@ -25,7 +25,11 @@ All notable changes to this project will be documented in this file.
   compared by both mapped status and expiration date, so an out-of-band MarkMonitor reissue that
   round-trips back to the same status isn't mistaken for no change - bypassed by the new
   `ForceCompleteSync` connection field, or Command's own full-sync flag. A new `PageSize` connection
-  field (default 100, clamped to 1-500) replaces the hardcoded sync page size.
+  field (default 100, clamped to 1-500) replaces the hardcoded sync page size. Records within a page
+  are now processed with bounded concurrency (up to 10 at a time) rather than one at a time, since
+  the skip-unchanged check above added local `ICertificateDataReader` round-trips per record that
+  previously didn't exist and were otherwise serializing (and blocking the next MarkMonitor page
+  fetch behind) a large sync's entire record count.
 - A new `RenewalWindowDays` template parameter (default 90) gates whether a `RenewOrReissue`
   enrollment revokes the certificate it's replacing - only when that certificate's resolvable
   expiration falls within the window. A prior certificate with substantial life left outside the
@@ -49,12 +53,17 @@ All notable changes to this project will be documented in this file.
   the credentials being saved - a wrong API key or password is now caught at connector-save time
   instead of surfacing only on the first real enroll/revoke/sync. Failures are summarized
   ("authentication failed" / "listing organizations failed" / "could not be parsed") rather than
-  forwarding the raw HTTP response or a raw deserialization exception. Skipped entirely when the
-  connector is saved with `Enabled=false`, preserving that field's own documented purpose (letting
-  an admin create the CA connector before real credentials are available). `ValidateProductInfo`
-  (and `Enroll` itself) now also reject a `ProductID` that doesn't resolve to an actually-defined
-  `CertOrderTypes` member - `Enum.TryParse`/`Enum.Parse` alone silently "succeed" for any numeric
-  string that merely fits the underlying type, listing the valid values instead.
+  forwarding the raw HTTP response or a raw (and, for the parse-failure path specifically,
+  unsanitized - it echoes the rejected value verbatim) deserialization exception. Skipped entirely
+  when the connector is saved with `Enabled=false`, preserving that field's own documented purpose
+  (letting an admin create the CA connector before real credentials are available).
+  `ValidateProductInfo` (and `Enroll` itself) now also reject a `ProductID` that doesn't resolve to
+  an actually-defined `CertOrderTypes` member - `Enum.TryParse`/`Enum.Parse` alone silently "succeed"
+  for any numeric string that merely fits the underlying type, listing the valid values instead.
+- `Enroll` could report a certificate as issued (`GENERATED`) with a `null` certificate body if
+  MarkMonitor's order status flipped to issued a moment before the cert body itself was populated
+  and the pickup-poll budget exhausted at exactly that moment. Now reports `INPROCESS` instead in
+  that case - an internally consistent "not actually ready" signal rather than a false success.
 - Multi-SAN enrollments now issue with every requested DNS SAN instead of just the CN - `Enroll`'s
   `san` dictionary is now wired into the MarkMonitor order's `dnsNames` field. MarkMonitor issues
   CN ∪ `dnsNames` and does not honor a CSR's own SAN extension as authoritative, so previously a
@@ -75,11 +84,16 @@ All notable changes to this project will be documented in this file.
   config: the new `PickupRetries`/`PickupDelaySeconds` fields default to 5/10s (see "Added" above),
   and MarkMonitor never issues synchronously from order creation, so a typical enrollment now spends
   that time polling before returning - up to `PickupRetries * (PickupDelaySeconds + TimeoutSeconds)`
-  in the worst case if MarkMonitor is slow to respond rather than erroring (roughly 11 minutes at
-  the shipped defaults, not just `PickupRetries * PickupDelaySeconds` ≈ 50s - size any upstream
-  timeout off the real worst case, not the nominal one). Set `PickupRetries=0` to restore the prior
-  near-instant-return (always-pending) behavior if this trips a tuned request timeout in front of
-  the gateway or in a bulk-enrollment pipeline.
+  for the polling loop alone in the worst case if MarkMonitor is slow to respond rather than
+  erroring, not just `PickupRetries * PickupDelaySeconds` ≈ 50s. That's not the whole picture,
+  though: organization/group name resolution (`ResolveOrganizationAsync`/`ResolveGroupIdAsync`,
+  used whenever `OrgId`/`MarkmonitorGroup` are configured by friendly name rather than GUID - the
+  documented normal usage) is now also retried, adding up to another ~2 * `TimeoutSeconds` before
+  order creation is even attempted. Combined, one `Enroll` call's real worst case at the shipped
+  defaults is roughly 25 minutes, not the ~11 minutes the polling formula alone implies - size any
+  upstream timeout off that combined figure. Set `PickupRetries=0` to restore the prior
+  near-instant-return (always-pending) behavior for the polling component specifically; it does not
+  reduce the org/group resolution retry latency, which applies to every `Enroll` call regardless.
 - **Saving a CA connection now requires live MarkMonitor connectivity** when the connector is
   enabled, even for a save that only changes an unrelated field (Command always resubmits the full
   connection config, not a diff) - see `ValidateCAConnectionInfo` under "Fixed" above. A connection

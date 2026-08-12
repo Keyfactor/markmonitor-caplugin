@@ -132,11 +132,11 @@ The Markmonitor AnyCA Gateway REST plugin is supported by Keyfactor for Keyfacto
         * **BaseUrl** - The Base URL for the MarkMonitor API - Usually either https://api.markmonitor.com
         * **OrgId** - The name of the MarkMonitor Organization to use for the API calls (ex: MarkMonitor). You can also use the Organization ID in GUID format.
         * **Enabled** - Flag to Enable or Disable gateway functionality. Disabling is primarily used to allow creation of the CA prior to configuration information being available.
-        * **TimeoutSeconds** - The HTTP request timeout, in seconds, for calls to the MarkMonitor API. Default is 120.
+        * **TimeoutSeconds** - The HTTP request timeout, in seconds, for calls to the MarkMonitor API (1-120). Default is 120.
         * **PageSize** - The number of certificate orders requested per page during synchronization (1-500). Default is 100.
         * **ForceCompleteSync** - When true, bypasses the skip-unchanged optimization and re-emits every order on every synchronization. Default is false.
-        * **PickupRetries** - How many times to poll a freshly-created order for issuance before returning it in its still-pending state. 0 disables polling. Default is 5.
-        * **PickupDelaySeconds** - The delay, in seconds, between issuance pickup polls. Default is 10.
+        * **PickupRetries** - How many times to poll a freshly-created order for issuance before returning it in its still-pending state (0-20). 0 disables polling. Default is 5.
+        * **PickupDelaySeconds** - The delay, in seconds, between issuance pickup polls (0-60). Default is 10.
 
 2. A certificate template must be created in Keyfactor Command for each MarkMonitor product type you
 want to enroll. One template is required per product type (see [Product IDs](#product-ids)). Below is
@@ -187,11 +187,11 @@ must be provided before the connector can be saved in an enabled state.
 | `BaseUrl` | Required | No | `https://api.markmonitor.com` | The MarkMonitor API base URL. Must start with `https://` — credentials and the bearer token are sent to it. |
 | `OrgId` | Required | No | *(none)* | The MarkMonitor organization to use for API calls. Accepts either the organization **name** (e.g. `MarkMonitor`) or its **ID in GUID format**. Used to scope enrollment and to verify ownership on revoke. |
 | `Enabled` | Optional | No | `true` | Enables or disables gateway functionality. Disable to allow the CA to be created before configuration information is available. |
-| `TimeoutSeconds` | Optional | No | `120` | The HTTP request timeout, in seconds, for calls to the MarkMonitor API. |
+| `TimeoutSeconds` | Optional | No | `120` | The HTTP request timeout, in seconds, for calls to the MarkMonitor API. Clamped to 1-120. |
 | `PageSize` | Optional | No | `100` | The number of certificate orders requested per page during synchronization. Clamped to 1-500. |
 | `ForceCompleteSync` | Optional | No | `false` | When `true`, bypasses the skip-unchanged synchronization optimization and re-emits every order on every sync. |
-| `PickupRetries` | Optional | No | `5` | How many times `Enroll` polls a freshly-created order for issuance before returning it in its still-pending state. `0` disables polling. |
-| `PickupDelaySeconds` | Optional | No | `10` | The delay, in seconds, between issuance pickup polls. |
+| `PickupRetries` | Optional | No | `5` | How many times `Enroll` polls a freshly-created order for issuance before returning it in its still-pending state. `0` disables polling. Clamped to 0-20. |
+| `PickupDelaySeconds` | Optional | No | `10` | The delay, in seconds, between issuance pickup polls. Clamped to 0-60. |
 
 > **Note:** Credentials are stored in Keyfactor Command's encrypted gateway configuration. `ApiKey`
 > and `Password` are masked in the UI and are never written to logs by the plugin.

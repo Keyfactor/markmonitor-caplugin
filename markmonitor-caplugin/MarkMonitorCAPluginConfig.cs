@@ -97,6 +97,21 @@ public class MarkMonitorCAPluginConfig
                 Hidden = false,
                 DefaultValue = false,
                 Type = "Boolean"
+            },
+            [ConfigConstants.PickupRetries] = new()
+            {
+                Comments =
+                    "How many times to poll a freshly-created order for issuance before returning it in its still-pending state. 0 disables polling. Default is 5.",
+                Hidden = false,
+                DefaultValue = 5,
+                Type = "Number"
+            },
+            [ConfigConstants.PickupDelaySeconds] = new()
+            {
+                Comments = "The delay, in seconds, between issuance pickup polls. Default is 10.",
+                Hidden = false,
+                DefaultValue = 10,
+                Type = "Number"
             }
         };
     }
@@ -213,6 +228,14 @@ public class MarkMonitorCAPluginConfig
         /// The force-complete-sync flag property name.
         /// </summary>
         public const string ForceCompleteSync = "ForceCompleteSync";
+        /// <summary>
+        /// The pickup poll retry count property name.
+        /// </summary>
+        public const string PickupRetries = "PickupRetries";
+        /// <summary>
+        /// The pickup poll delay (seconds) property name.
+        /// </summary>
+        public const string PickupDelaySeconds = "PickupDelaySeconds";
     }
 
     /// <summary>

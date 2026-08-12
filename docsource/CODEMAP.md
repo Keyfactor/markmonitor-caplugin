@@ -40,7 +40,7 @@ MarkMonitor's SSL API is backed by **DigiCert** (the only `provider` it supports
 |---|---|
 | `MarkMonitorCAConnector.cs` | `IAnyCAPlugin` entry point. Methods the Gateway host calls: `Initialize`, `Enroll`, `Revoke`, `Synchronize`, `GetSingleRecord`, `Ping`, `ValidateCAConnectionInfo` (field checks, then a live auth + org-list call via a transient client - never `_cachedClient`), `ValidateProductInfo` (cheap static `ProductID` enum check only - contact/group stay a no-op), `GetProductIds`, `GetCAConnectorAnnotations` / `GetTemplateParameterAnnotations`. Holds the deserialized config and one lazily-built, cached `MarkMonitorClient` (`CreateAndAuthenticateClientAsync`). Contains the `RenewOrReissue` → revoke-prior logic and the `EnsureOrgNameConfigured` guard. |
 | `Client/MarkMonitorClient.cs` | The MarkMonitor REST HTTP client. Owns: bearer-token auth (`X-API-KEY` header + username/password → token, cached with 30s early-expiry, double-checked locking); list pagination (`MarkMonitorPage.TotalPages`); CSR PEM/DER handling via BouncyCastle; ECC named-curve validation; the process-local enrollment dedup cache (5-min, keyed org\|product\|subject\|csr); `MarkMonitorCertificateStatusToCAStatus` mapping; `BuildErrorString` error parsing; org/contact/group resolution; `SendWithRetryAsync` (3-attempt retry with jittered exponential backoff on network failures/timeouts and 5xx/429, honoring `Retry-After` on 429 - **not** used for the order-create POST or the reissue PATCH, both of which risk creating a duplicate billable resource on an ambiguous failure); `HttpClient.Timeout` from the `TimeoutSeconds` config field (default 120s). |
-| `MarkMonitorCAPluginConfig.cs` | CA-connection + enrollment-parameter schema, UI annotations/defaults, and canonical field-name constants: `ConfigConstants` (ApiKey, Username, Password=`"Password"`, BaseUrl, OrgId=`"OrgId"`, Enabled, TimeoutSeconds) and `EnrollmentConfigConstants` (AdditionalEmails, MarkmonitorGroup, MarkmonitorContact, DCVMethod, comments, locale, provider). Also `ConfigurationValidationException`. |
+| `MarkMonitorCAPluginConfig.cs` | CA-connection + enrollment-parameter schema, UI annotations/defaults, and canonical field-name constants: `ConfigConstants` (ApiKey, Username, Password=`"Password"`, BaseUrl, OrgId=`"OrgId"`, Enabled, TimeoutSeconds, PageSize, ForceCompleteSync, PickupRetries, PickupDelaySeconds) and `EnrollmentConfigConstants` (AdditionalEmails, MarkmonitorGroup, MarkmonitorContact, DCVMethod, comments, locale, provider, RenewalWindowDays). Also `ConfigurationValidationException`. |
 | `MarkMonitorConfig.cs` | The deserialized CA-connection config type used at runtime. |
 | `Models/` | Request/response DTOs (orders, organizations, contacts, groups, token) + `Enums.cs`. |
 | `Models/Enums.cs` | `CertOrderTypes` (product IDs → API strings via `[Description]`), `OrderStatus`, `OrderActions`, `AlgorithmTypes`, `DomainControlValidationMethods`, `CertServerPlatforms`, and `EnumExtensions.GetDescription()`. |
@@ -52,7 +52,12 @@ MarkMonitor's SSL API is backed by **DigiCert** (the only `provider` it supports
   token (cached, lazy refresh). No OAuth.
 - **Enroll:** dedup-check → resolve org/contact/group → parse+validate CSR (reject ECC explicit
   curve) → `POST /certs/v1/order`. Accepted orders usually return `CREATED` →
-  `EXTERNALVALIDATION` (pending DCV/approval). `RenewOrReissue` places a new order then revokes the
+  `EXTERNALVALIDATION` (pending DCV/approval) - MarkMonitor never issues synchronously from the
+  create-order call. `PollForIssuanceAsync` (inside the dedup reservation, so a folded-in concurrent
+  duplicate sees the polled result too) then polls `GetSingleOrderAsync`'s underlying fetch up to
+  `PickupRetries` times (every `PickupDelaySeconds`) for a product whose DCV/approval resolves
+  quickly, stopping early on either issuance or a terminal non-issued status; `PickupRetries=0`
+  (not the default) skips polling entirely. `RenewOrReissue` places a new order then revokes the
   prior cert (via `PriorCertSN` → `ICertificateDataReader`), but only when that prior cert's
   resolvable expiration date is within its `RenewalWindowDays` template param (default 90) - if it's
   resolvable and outside the window, the prior cert is left unrevoked and the request behaves like a

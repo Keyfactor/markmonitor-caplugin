@@ -23,6 +23,12 @@ All notable changes to this project will be documented in this file.
   enrollment revokes the certificate it's replacing - only when that certificate's resolvable
   expiration falls within the window. A prior certificate with substantial life left outside the
   window is left unrevoked, and the enrollment behaves like a plain new issuance instead.
+- `Enroll` now polls a freshly-created order for issuance (new `PickupRetries`/`PickupDelaySeconds`
+  connection fields, defaults 5/10s) instead of always returning it in MarkMonitor's initial pending
+  state - a product whose DCV/approval resolves quickly can now come back from the enroll call
+  already issued rather than only picking up the certificate on the next sync. Polling happens
+  inside the enrollment dedup reservation, so a concurrent duplicate request folded into it gets the
+  polled result too. `PickupRetries=0` restores the original always-pending behavior.
 
 ### Fixed
 

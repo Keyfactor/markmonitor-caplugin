@@ -34,6 +34,8 @@ field except `Enabled` must be filled in before the connector can be saved and e
 | `TimeoutSeconds` | No | No | `120` | How long, in seconds, to wait on a single MarkMonitor API call before giving up. |
 | `PageSize` | No | No | `100` | How many certificate orders to request per page during synchronization (1-500). |
 | `ForceCompleteSync` | No | No | `false` | When `true`, re-imports every order on every sync instead of skipping ones that haven't changed. |
+| `PickupRetries` | No | No | `5` | How many times enrollment polls a freshly-created order for issuance before giving up and returning it pending. `0` turns this off. |
+| `PickupDelaySeconds` | No | No | `10` | How long to wait between issuance pickup polls. |
 
 Your API key and password are encrypted in Command's gateway configuration, masked in the UI, and
 never written to logs.

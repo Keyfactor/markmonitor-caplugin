@@ -48,6 +48,14 @@
                 {
                     "name": "ForceCompleteSync",
                     "description": "When true, bypasses the skip-unchanged optimization and re-emits every order on every synchronization. Default is false."
+                },
+                {
+                    "name": "PickupRetries",
+                    "description": "How many times to poll a freshly-created order for issuance before returning it in its still-pending state. 0 disables polling. Default is 5."
+                },
+                {
+                    "name": "PickupDelaySeconds",
+                    "description": "The delay, in seconds, between issuance pickup polls. Default is 10."
                 }
             ],
             "enrollment_config": [

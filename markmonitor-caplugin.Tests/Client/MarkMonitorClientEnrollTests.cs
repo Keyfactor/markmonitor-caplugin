@@ -13,7 +13,8 @@ public class MarkMonitorClientEnrollTests
         ApiUsername = "user",
         ApiPassword = "pass",
         OrgName = "Test Org",
-        Enabled = true
+        Enabled = true,
+        PickupRetries = 0 // disable post-submit polling - not what these tests exercise
     };
 
     [Fact]

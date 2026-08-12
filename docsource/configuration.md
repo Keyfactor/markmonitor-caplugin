@@ -87,6 +87,8 @@ must be provided before the connector can be saved in an enabled state.
 | `TimeoutSeconds` | Optional | No | `120` | The HTTP request timeout, in seconds, for calls to the MarkMonitor API. |
 | `PageSize` | Optional | No | `100` | The number of certificate orders requested per page during synchronization. Clamped to 1-500. |
 | `ForceCompleteSync` | Optional | No | `false` | When `true`, bypasses the skip-unchanged synchronization optimization and re-emits every order on every sync. |
+| `PickupRetries` | Optional | No | `5` | How many times `Enroll` polls a freshly-created order for issuance before returning it in its still-pending state. `0` disables polling. |
+| `PickupDelaySeconds` | Optional | No | `10` | The delay, in seconds, between issuance pickup polls. |
 
 > **Note:** Credentials are stored in Keyfactor Command's encrypted gateway configuration. `ApiKey`
 > and `Password` are masked in the UI and are never written to logs by the plugin.
@@ -236,9 +238,13 @@ sequenceDiagram
 
 When a requester submits a certificate request through Keyfactor Command, the plugin translates it
 into a MarkMonitor order: it resolves the organization, contact, and (optional) group; validates and
-normalizes the CSR; and submits the order. Because Domain Control Validation (and, in some
-environments, manual approval) is required before issuance, a newly submitted order is typically
-accepted in a pending state rather than coming back with an issued certificate right away.
+normalizes the CSR; and submits the order. MarkMonitor never issues synchronously from the
+create-order call - a newly submitted order always comes back pending (typically `CREATED`), since
+Domain Control Validation (and, in some environments, manual approval) is required first. For a
+product whose DCV/approval resolves quickly, the plugin polls the order for up to `PickupRetries`
+attempts (every `PickupDelaySeconds`) before returning, so Command can get the issued certificate
+back from the enroll call itself rather than always waiting for the next sync; `PickupRetries=0`
+disables this and restores the original always-returns-pending behavior.
 
 ```mermaid
 sequenceDiagram
@@ -258,6 +264,13 @@ sequenceDiagram
         Plugin->>API: Submit the certificate order
         API-->>Plugin: Order accepted — order ID and status
 
+        opt Not yet issued and PickupRetries > 0
+            loop Up to PickupRetries times, every PickupDelaySeconds
+                Plugin->>API: Poll the order
+                API-->>Plugin: Current status
+            end
+        end
+
         alt Renewal/Reissue request
             Plugin->>API: Revoke the certificate being replaced
         end
@@ -265,6 +278,10 @@ sequenceDiagram
         Plugin-->>CMD: Enrollment result (order ID, current status)
     end
 ```
+
+> A concurrent duplicate request folded into this same in-flight reservation (the "identical request
+> already submitted" branch above) receives the polled result too, not just the original pending
+> status - the fold happens after polling completes, not before.
 
 MarkMonitor has no in-place "renew" enrollment endpoint through this plugin, so a Renewal/Reissue
 request always places a brand-new order. Once the replacement certificate has been created

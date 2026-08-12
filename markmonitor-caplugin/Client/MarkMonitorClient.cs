@@ -666,6 +666,64 @@ public class MarkMonitorClient : IDisposable
         return JsonConvert.DeserializeObject<OrderContent>(content);
     }
 
+    /// <summary>
+    /// MarkMonitor always returns a freshly-created order in a pending state (typically
+    /// EXTERNALVALIDATION) - unlike some other CA APIs, it never issues synchronously from the
+    /// create-order call. For a product that resolves DCV/approval quickly, polling here for up to
+    /// <see cref="MarkMonitorConfig.PickupRetries"/> attempts (every
+    /// <see cref="MarkMonitorConfig.PickupDelaySeconds"/> seconds) lets Enroll return the issued
+    /// certificate directly instead of always making Command wait for the next sync. Falls back to
+    /// returning <paramref name="order"/> unchanged - today's existing behavior - if
+    /// <c>PickupRetries</c> is 0, the order already reached a terminal state, or the budget is
+    /// exhausted before issuance.
+    /// </summary>
+    private async Task<OrderContent> PollForIssuanceAsync(OrderContent order, MarkMonitorConfig config)
+    {
+        if (config.PickupRetries <= 0 || IsIssuedWithCert(order) || IsTerminalNonIssuedStatus(order)) return order;
+
+        var delay = TimeSpan.FromSeconds(config.PickupDelaySeconds);
+        for (var attempt = 1; attempt <= config.PickupRetries; attempt++)
+        {
+            await _delay(delay, CancellationToken.None);
+
+            OrderContent polled;
+            try
+            {
+                polled = await FetchOrderAsync(order.Id);
+            }
+            catch (Exception e)
+            {
+                // A transient failure to poll must not fail an enrollment whose order was already
+                // created successfully - just retry on the next attempt with the last known state.
+                _logger.LogWarning(
+                    "Pickup poll {Attempt}/{MaxAttempts} for order {CARequestID} failed - will retry: {EMessage}",
+                    attempt, config.PickupRetries, order.Id, e.Message);
+                continue;
+            }
+
+            order = polled;
+            if (IsIssuedWithCert(order) || IsTerminalNonIssuedStatus(order)) break;
+        }
+
+        _logger.LogInformation(
+            "Pickup polling for order {CARequestID} finished after up to {MaxAttempts} attempt(s), current status {OrderStatus}",
+            order.Id, config.PickupRetries, order.Status);
+        return order;
+    }
+
+    private bool IsIssuedWithCert(OrderContent order) =>
+        MarkMonitorCertificateStatusToCAStatus(order) == (int)EndEntityStatus.GENERATED &&
+        order.Cert?.EndEntityCert != null;
+
+    // No point spending the rest of the poll budget once the order has reached a terminal state that
+    // will never produce a certificate.
+    private bool IsTerminalNonIssuedStatus(OrderContent order)
+    {
+        var status = MarkMonitorCertificateStatusToCAStatus(order);
+        return status == (int)EndEntityStatus.FAILED || status == (int)EndEntityStatus.CANCELLED ||
+               status == (int)EndEntityStatus.REVOKED;
+    }
+
     /// <summary>Resolves a CA connection's configured OrgId (which may be a friendly name or a
     /// GUID) to the organization's real GUID.</summary>
     private async Task<string> ResolveOrganizationIdAsync(string orgNameOrId)
@@ -1036,6 +1094,12 @@ public class MarkMonitorClient : IDisposable
             _logger.LogInformation(
                 "Order {CARequestID} was created with ContactId {ContactId} and GroupId {GroupId}", order.Id,
                 resolvedContact?.Id, groupIdGuid);
+
+            // Polling happens here, before the reservation resolves, so a concurrent duplicate call
+            // that's folded into this reservation (the dedup-hit path above) gets the polled result
+            // too, rather than always seeing the original pending status.
+            order = await PollForIssuanceAsync(order, config);
+
             var enrollmentResult = new EnrollmentResult
             {
                 CARequestID = order.Id,

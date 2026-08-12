@@ -90,4 +90,27 @@ public class MarkMonitorConfig
     /// </summary>
     [JsonProperty(MarkMonitorCAPluginConfig.ConfigConstants.ForceCompleteSync)]
     public bool ForceCompleteSync { get; set; }
+
+    private int _pickupRetries = 5;
+
+    /// <summary>
+    /// How many times to poll a freshly-created order for issuance before falling back to returning
+    /// it in its still-pending state. 0 disables polling entirely. Clamped to a non-negative value.
+    /// </summary>
+    [JsonProperty(MarkMonitorCAPluginConfig.ConfigConstants.PickupRetries)]
+    public int PickupRetries
+    {
+        get => _pickupRetries;
+        set => _pickupRetries = Math.Max(0, value);
+    }
+
+    private int _pickupDelaySeconds = 10;
+
+    /// <summary>The delay between pickup polls, in seconds. Clamped to a non-negative value.</summary>
+    [JsonProperty(MarkMonitorCAPluginConfig.ConfigConstants.PickupDelaySeconds)]
+    public int PickupDelaySeconds
+    {
+        get => _pickupDelaySeconds;
+        set => _pickupDelaySeconds = Math.Max(0, value);
+    }
 }

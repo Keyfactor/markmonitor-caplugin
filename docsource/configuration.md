@@ -84,11 +84,11 @@ must be provided before the connector can be saved in an enabled state.
 | `BaseUrl` | Required | No | `https://api.markmonitor.com` | The MarkMonitor API base URL. Must start with `https://` — credentials and the bearer token are sent to it. |
 | `OrgId` | Required | No | *(none)* | The MarkMonitor organization to use for API calls. Accepts either the organization **name** (e.g. `MarkMonitor`) or its **ID in GUID format**. Used to scope enrollment and to verify ownership on revoke. |
 | `Enabled` | Optional | No | `true` | Enables or disables gateway functionality. Disable to allow the CA to be created before configuration information is available. |
-| `TimeoutSeconds` | Optional | No | `120` | The HTTP request timeout, in seconds, for calls to the MarkMonitor API. |
+| `TimeoutSeconds` | Optional | No | `120` | The HTTP request timeout, in seconds, for calls to the MarkMonitor API. Clamped to 1-120. |
 | `PageSize` | Optional | No | `100` | The number of certificate orders requested per page during synchronization. Clamped to 1-500. |
 | `ForceCompleteSync` | Optional | No | `false` | When `true`, bypasses the skip-unchanged synchronization optimization and re-emits every order on every sync. |
-| `PickupRetries` | Optional | No | `5` | How many times `Enroll` polls a freshly-created order for issuance before returning it in its still-pending state. `0` disables polling. |
-| `PickupDelaySeconds` | Optional | No | `10` | The delay, in seconds, between issuance pickup polls. |
+| `PickupRetries` | Optional | No | `5` | How many times `Enroll` polls a freshly-created order for issuance before returning it in its still-pending state. `0` disables polling. Clamped to 0-20. |
+| `PickupDelaySeconds` | Optional | No | `10` | The delay, in seconds, between issuance pickup polls. Clamped to 0-60. |
 
 > **Note:** Credentials are stored in Keyfactor Command's encrypted gateway configuration. `ApiKey`
 > and `Password` are masked in the UI and are never written to logs by the plugin.

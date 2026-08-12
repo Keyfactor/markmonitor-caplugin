@@ -11,24 +11,31 @@ All notable changes to this project will be documented in this file.
   backoff (honoring `Retry-After` on 429). The order-create POST and reissue PATCH are deliberately
   excluded - retrying either risks creating a duplicate, billable MarkMonitor resource on an
   ambiguous failure.
-- A new `TimeoutSeconds` CA connection field (default 120) sets the HTTP request timeout for calls
-  to the MarkMonitor API.
+- A new `TimeoutSeconds` CA connection field (default 120, clamped to 1-120 - never higher than this
+  field's own pre-existing hardcoded default, so a misconfigured value can't make a slow-MarkMonitor
+  scenario worse than before this field existed) sets the HTTP request timeout for calls to the
+  MarkMonitor API.
 - `Synchronize` now isolates per-record failures (a bad status string, bad date, or null field on
   one order is logged, counted, and skipped instead of aborting the entire sync), with an error-rate
   circuit breaker that aborts the sync outright if more than 25% of records fail once at least 50
-  have been observed. Unchanged orders are now skipped rather than re-emitted on every sync
-  (bypassed by the new `ForceCompleteSync` connection field, or Command's own full-sync flag). A new
-  `PageSize` connection field (default 100, clamped to 1-500) replaces the hardcoded sync page size.
+  have been observed. Unchanged orders are now skipped rather than re-emitted on every sync -
+  compared by both mapped status and expiration date, so an out-of-band MarkMonitor reissue that
+  round-trips back to the same status isn't mistaken for no change - bypassed by the new
+  `ForceCompleteSync` connection field, or Command's own full-sync flag. A new `PageSize` connection
+  field (default 100, clamped to 1-500) replaces the hardcoded sync page size.
 - A new `RenewalWindowDays` template parameter (default 90) gates whether a `RenewOrReissue`
   enrollment revokes the certificate it's replacing - only when that certificate's resolvable
   expiration falls within the window. A prior certificate with substantial life left outside the
-  window is left unrevoked, and the enrollment behaves like a plain new issuance instead.
+  window is left unrevoked, and the enrollment behaves like a plain new issuance instead. An
+  invalid/mistyped value falls back to the default and is now logged as a warning, so a
+  misconfigured window isn't indistinguishable from one that was simply never set.
 - `Enroll` now polls a freshly-created order for issuance (new `PickupRetries`/`PickupDelaySeconds`
-  connection fields, defaults 5/10s) instead of always returning it in MarkMonitor's initial pending
-  state - a product whose DCV/approval resolves quickly can now come back from the enroll call
-  already issued rather than only picking up the certificate on the next sync. Polling happens
-  inside the enrollment dedup reservation, so a concurrent duplicate request folded into it gets the
-  polled result too. `PickupRetries=0` restores the original always-pending behavior.
+  connection fields, defaults 5/10s, clamped to 0-20 / 0-60s) instead of always returning it in
+  MarkMonitor's initial pending state - a product whose DCV/approval resolves quickly can now come
+  back from the enroll call already issued rather than only picking up the certificate on the next
+  sync. Polling happens inside the enrollment dedup reservation, so a concurrent duplicate request
+  folded into it gets the polled result too. `PickupRetries=0` restores the original always-pending
+  behavior.
 
 ### Fixed
 
@@ -52,6 +59,17 @@ All notable changes to this project will be documented in this file.
   parameters. They were surfaced in Command's UI but never actually read anywhere - MarkMonitor's
   API has no field to wire them up to - so setting them silently did nothing. If a template
   referenced these parameters, remove them; they have no effect and are no longer offered.
+- **`Enroll` now takes up to ~50 seconds longer by default** on an upgrade that doesn't touch its
+  saved CA connection config: the new `PickupRetries`/`PickupDelaySeconds` fields default to 5/10s
+  (see "Added" above), and MarkMonitor never issues synchronously from order creation, so a typical
+  enrollment now spends that time polling before returning. Set `PickupRetries=0` to restore the
+  prior near-instant-return (always-pending) behavior if this trips a tuned request timeout in
+  front of the gateway or in a bulk-enrollment pipeline.
+- **Saving a CA connection now requires live MarkMonitor connectivity**, even for a save that only
+  changes an unrelated field (Command always resubmits the full connection config, not a diff) - see
+  `ValidateCAConnectionInfo` under "Fixed" above. A connection whose credentials have since been
+  invalidated at MarkMonitor, or that's saved during a MarkMonitor outage longer than the client's
+  3-attempt retry budget, can no longer be re-saved until connectivity is restored.
 
 ### Fixed
 

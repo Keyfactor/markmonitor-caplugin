@@ -312,13 +312,23 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
     /// <summary>Parses the RenewalWindowDays template parameter (case-insensitive key, matching
     /// every other enrollment parameter lookup in this file); absent or invalid (non-positive,
     /// non-numeric) falls back to <see cref="DefaultRenewalWindowDays"/> rather than failing the
-    /// enrollment over a template misconfiguration.</summary>
-    private static int ParseRenewalWindowDays(Dictionary<string, string> productParameters)
+    /// enrollment over a template misconfiguration. A value that's present but rejected is logged -
+    /// unlike a value that's simply absent - since this silently changes a security-relevant revoke
+    /// decision and an administrator who mistyped it would otherwise have no signal from the gateway
+    /// logs that their configured window was never actually applied.</summary>
+    private int ParseRenewalWindowDays(Dictionary<string, string> productParameters)
     {
         var raw = productParameters?
             .FirstOrDefault(kv => string.Equals(kv.Key, "RenewalWindowDays", StringComparison.OrdinalIgnoreCase))
             .Value;
-        return int.TryParse(raw, out var parsed) && parsed > 0 ? parsed : DefaultRenewalWindowDays;
+        if (string.IsNullOrWhiteSpace(raw)) return DefaultRenewalWindowDays;
+
+        if (int.TryParse(raw, out var parsed) && parsed > 0) return parsed;
+
+        _logger.LogWarning(
+            "Invalid RenewalWindowDays value '{RenewalWindowDays}' - must be a positive integer; falling back to the default of {DefaultRenewalWindowDays} day(s)",
+            LogSanitizer.ForLog(raw), DefaultRenewalWindowDays);
+        return DefaultRenewalWindowDays;
     }
 
     /// <summary>
@@ -445,8 +455,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
                 var rawConfig = JsonConvert.SerializeObject(connectionInfo);
                 tempConfig = JsonConvert.DeserializeObject<MarkMonitorConfig>(rawConfig);
                 tempConfig.BaseUrl = baseURL; // the resolved effective value (blank -> the default above)
-                tempClient = new MarkMonitorClient(tempConfig.BaseUrl, tempConfig.ApiKey, tempConfig.ApiUsername,
-                    tempConfig.ApiPassword, true, timeoutSeconds: tempConfig.TimeoutSeconds);
+                tempClient = BuildClient(tempConfig);
             }
 
             try
@@ -563,6 +572,14 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         
     }
 
+    /// <summary>Builds a real MarkMonitorClient from the given config - the one place this
+    /// connector's own construction argument list lives, shared by the cached-client path
+    /// (<see cref="CreateAndAuthenticateClientAsync"/>) and the transient one
+    /// (<see cref="ValidateCAConnectionInfo"/>).</summary>
+    private static MarkMonitorClient BuildClient(MarkMonitorConfig config) =>
+        new(config.BaseUrl, config.ApiKey, config.ApiUsername, config.ApiPassword, true,
+            timeoutSeconds: config.TimeoutSeconds);
+
     /// <summary>
     /// Returns a single MarkMonitorClient shared for the lifetime of this plugin instance, building
     /// it (or adopting an injected one) on first use only. Each of MarkMonitorClient's own methods
@@ -579,16 +596,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             await _clientLock.WaitAsync();
             try
             {
-                _cachedClient ??= _markMonitorClientWasInjected
-                    ? Client
-                    : new MarkMonitorClient(
-                        _config.BaseUrl,
-                        _config.ApiKey,
-                        _config.ApiUsername,
-                        _config.ApiPassword,
-                        true,
-                        timeoutSeconds: _config.TimeoutSeconds
-                    );
+                _cachedClient ??= _markMonitorClientWasInjected ? Client : BuildClient(_config);
             }
             finally
             {

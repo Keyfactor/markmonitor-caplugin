@@ -57,14 +57,28 @@ public class MarkMonitorConfig
     [JsonProperty(MarkMonitorCAPluginConfig.ConfigConstants.Enabled)]
     public bool Enabled { get; set; }
 
+    private const int MinTimeoutSeconds = 1;
+    private const int MaxTimeoutSeconds = 120;
+    private int _timeoutSeconds = 120;
+
     /// <summary>
-    /// The HTTP request timeout, in seconds, for calls to the MarkMonitor API. A property
-    /// initializer (not just the annotation's DefaultValue) is required here so an existing saved
-    /// CA connection - created before this field existed, and so missing it entirely from its
-    /// stored JSON - still gets a sane timeout rather than 0.
+    /// The HTTP request timeout, in seconds, for calls to the MarkMonitor API. Clamped to
+    /// [<see cref="MinTimeoutSeconds"/>, <see cref="MaxTimeoutSeconds"/>] in the setter - a value
+    /// &lt;= 0 would otherwise crash <c>HttpClient.Timeout</c>'s own setter with an unhandled
+    /// ArgumentOutOfRangeException (verified: .NET rejects non-positive timeouts), and the upper
+    /// bound is capped at this field's own pre-existing hardcoded default so a misconfigured value
+    /// can never make a slow-MarkMonitor scenario worse than before this field was configurable -
+    /// notably bounding how long AuthenticateAsync can hold the shared auth lock across its 3 retry
+    /// attempts. A property initializer (not just the annotation's DefaultValue) is required here so
+    /// an existing saved CA connection - created before this field existed, and so missing it
+    /// entirely from its stored JSON - still gets a sane timeout rather than 0.
     /// </summary>
     [JsonProperty(MarkMonitorCAPluginConfig.ConfigConstants.TimeoutSeconds)]
-    public int TimeoutSeconds { get; set; } = 120;
+    public int TimeoutSeconds
+    {
+        get => _timeoutSeconds;
+        set => _timeoutSeconds = Math.Clamp(value, MinTimeoutSeconds, MaxTimeoutSeconds);
+    }
 
     private const int MinPageSize = 1;
     private const int MaxPageSize = 500;
@@ -91,26 +105,33 @@ public class MarkMonitorConfig
     [JsonProperty(MarkMonitorCAPluginConfig.ConfigConstants.ForceCompleteSync)]
     public bool ForceCompleteSync { get; set; }
 
+    private const int MaxPickupRetries = 20;
     private int _pickupRetries = 5;
 
     /// <summary>
     /// How many times to poll a freshly-created order for issuance before falling back to returning
-    /// it in its still-pending state. 0 disables polling entirely. Clamped to a non-negative value.
+    /// it in its still-pending state. 0 disables polling entirely. Clamped to
+    /// [0, <see cref="MaxPickupRetries"/>] - combined with <see cref="PickupDelaySeconds"/>'s own
+    /// cap, this bounds Enroll's worst-case added latency (and, since polling runs before the
+    /// enrollment dedup reservation resolves, how long a concurrent duplicate call can block behind
+    /// it) to a fixed, sane ceiling rather than an operator-configurable unbounded one.
     /// </summary>
     [JsonProperty(MarkMonitorCAPluginConfig.ConfigConstants.PickupRetries)]
     public int PickupRetries
     {
         get => _pickupRetries;
-        set => _pickupRetries = Math.Max(0, value);
+        set => _pickupRetries = Math.Clamp(value, 0, MaxPickupRetries);
     }
 
+    private const int MaxPickupDelaySeconds = 60;
     private int _pickupDelaySeconds = 10;
 
-    /// <summary>The delay between pickup polls, in seconds. Clamped to a non-negative value.</summary>
+    /// <summary>The delay between pickup polls, in seconds. Clamped to
+    /// [0, <see cref="MaxPickupDelaySeconds"/>].</summary>
     [JsonProperty(MarkMonitorCAPluginConfig.ConfigConstants.PickupDelaySeconds)]
     public int PickupDelaySeconds
     {
         get => _pickupDelaySeconds;
-        set => _pickupDelaySeconds = Math.Max(0, value);
+        set => _pickupDelaySeconds = Math.Clamp(value, 0, MaxPickupDelaySeconds);
     }
 }

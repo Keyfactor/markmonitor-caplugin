@@ -39,7 +39,7 @@
                 },
                 {
                     "name": "TimeoutSeconds",
-                    "description": "The HTTP request timeout, in seconds, for calls to the MarkMonitor API. Default is 120."
+                    "description": "The HTTP request timeout, in seconds, for calls to the MarkMonitor API (1-120). Default is 120."
                 },
                 {
                     "name": "PageSize",
@@ -51,11 +51,11 @@
                 },
                 {
                     "name": "PickupRetries",
-                    "description": "How many times to poll a freshly-created order for issuance before returning it in its still-pending state. 0 disables polling. Default is 5."
+                    "description": "How many times to poll a freshly-created order for issuance before returning it in its still-pending state (0-20). 0 disables polling. Default is 5."
                 },
                 {
                     "name": "PickupDelaySeconds",
-                    "description": "The delay, in seconds, between issuance pickup polls. Default is 10."
+                    "description": "The delay, in seconds, between issuance pickup polls (0-60). Default is 10."
                 }
             ],
             "enrollment_config": [

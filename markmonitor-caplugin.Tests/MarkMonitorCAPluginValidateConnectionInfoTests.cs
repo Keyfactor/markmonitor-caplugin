@@ -79,6 +79,26 @@ public class MarkMonitorCAPluginValidateConnectionInfoTests
     }
 
     [Fact]
+    public async Task ValidateCAConnectionInfo_WithTimeoutSecondsZero_ThrowsASanitizedErrorRatherThanCrashing()
+    {
+        // Regression test: TimeoutSeconds=0 used to reach HttpClient.Timeout's own setter unguarded,
+        // which .NET throws ArgumentOutOfRangeException for - propagating as a raw unhandled
+        // exception instead of this method's designed sanitized AnyCAValidationException. No client
+        // is injected here on purpose, since that's the only path that reaches the real
+        // (non-test-seam) transient-client construction where TimeoutSeconds actually gets used. An
+        // unroutable address (a closed local port) makes the live call fail fast and predictably;
+        // what matters is which exception type surfaces, not why the call failed.
+        var plugin = new MarkMonitorCAPlugin();
+        var connectionInfo = ValidConnectionInfo("https://127.0.0.1:1");
+        connectionInfo[MarkMonitorCAPluginConfig.ConfigConstants.TimeoutSeconds] = 0;
+
+        var ex = await Assert.ThrowsAsync<AnyCAValidationException>(() =>
+            plugin.ValidateCAConnectionInfo(connectionInfo));
+
+        Assert.Contains("Authentication failed", ex.Message);
+    }
+
+    [Fact]
     public async Task ValidateCAConnectionInfo_WhenNoOrganizationsAreVisible_ThrowsASanitizedError()
     {
         var handler = new FakeHttpMessageHandler()

@@ -112,6 +112,9 @@ public class MarkMonitorClientSyncResilienceTests
     {
         var reader = new FakeCertificateDataReader();
         reader.RequestIdToStatus[GoodId] = (int)EndEntityStatus.GENERATED; // DIGI_ISSUED maps to GENERATED
+        // SampleOrders.OrderWithCert's default dateValidUntil - matching this proves "truly unchanged"
+        // (same status AND same expiration), not just a status coincidence.
+        reader.ExpirationDateByRequestId[GoodId] = DateTime.Parse("2027-01-01T00:00:00Z").ToUniversalTime();
         var handler = new FakeHttpMessageHandler()
             .WithSuccessfulAuth()
             .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order"),
@@ -125,6 +128,55 @@ public class MarkMonitorClientSyncResilienceTests
 
         Assert.Equal(0, count);
         Assert.Empty(buffer.ToList());
+    }
+
+    [Fact]
+    public async Task GetCertificateInventoryAsync_WhenStatusMatchesButExpirationDiffers_StillEmitsIt()
+    {
+        // Regression test: an out-of-band MarkMonitor reissue of the same order ID round-trips
+        // DIGI_ISSUED -> DIGI_REISSUE_PENDING -> DIGI_ISSUED - if a sync only observes the order
+        // before and after that round-trip, status alone looks unchanged even though the certificate
+        // (and its expiration) is new. Comparing expiration too catches this.
+        var reader = new FakeCertificateDataReader();
+        reader.RequestIdToStatus[GoodId] = (int)EndEntityStatus.GENERATED;
+        reader.ExpirationDateByRequestId[GoodId] = DateTime.Parse("2026-06-01T00:00:00Z").ToUniversalTime();
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    // Default dateValidUntil (2027-01-01) differs from the reader's stored 2026-06-01 -
+                    // simulating a reissued certificate with a new validity window at the same status.
+                    SampleOrders.OrdersPage(SampleOrders.OrderWithCert(GoodId, "DIGI_ISSUED"))));
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+        var buffer = new BlockingCollection<AnyCAPluginCertificate>();
+
+        var count = await client.GetCertificateInventoryAsync("", "", 100, buffer, CancellationToken.None, reader);
+
+        Assert.Equal(1, count);
+        Assert.Contains(buffer.ToList(), c => c.CARequestID == GoodId);
+    }
+
+    [Fact]
+    public async Task GetCertificateInventoryAsync_WhenNoExpirationDataForTheRequestId_StillEmitsIt()
+    {
+        // Command not (yet) tracking an expiration for this request ID must not be treated as a
+        // false match - erring toward re-emitting rather than skipping when uncertain.
+        var reader = new FakeCertificateDataReader();
+        reader.RequestIdToStatus[GoodId] = (int)EndEntityStatus.GENERATED;
+        // No ExpirationDateByRequestId entry - GetExpirationDateByRequestId returns null.
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/order"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrders.OrdersPage(SampleOrders.OrderWithCert(GoodId, "DIGI_ISSUED"))));
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+        var buffer = new BlockingCollection<AnyCAPluginCertificate>();
+
+        var count = await client.GetCertificateInventoryAsync("", "", 100, buffer, CancellationToken.None, reader);
+
+        Assert.Equal(1, count);
     }
 
     [Fact]

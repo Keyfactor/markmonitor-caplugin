@@ -38,8 +38,8 @@ MarkMonitor's SSL API is backed by **DigiCert** (the only `provider` it supports
 
 | File | Responsibility |
 |---|---|
-| `MarkMonitorCAConnector.cs` | `IAnyCAPlugin` entry point. Methods the Gateway host calls: `Initialize`, `Enroll`, `Revoke`, `Synchronize`, `GetSingleRecord`, `Ping`, `ValidateCAConnectionInfo` (field checks, then a live auth + org-list call via a transient client - never `_cachedClient`), `ValidateProductInfo` (cheap static `ProductID` enum check only - contact/group stay a no-op), `GetProductIds`, `GetCAConnectorAnnotations` / `GetTemplateParameterAnnotations`. Holds the deserialized config and one lazily-built, cached `MarkMonitorClient` (`CreateAndAuthenticateClientAsync`). Contains the `RenewOrReissue` → revoke-prior logic and the `EnsureOrgNameConfigured` guard. |
-| `Client/MarkMonitorClient.cs` | The MarkMonitor REST HTTP client. Owns: bearer-token auth (`X-API-KEY` header + username/password → token, cached with 30s early-expiry, double-checked locking); list pagination (`MarkMonitorPage.TotalPages`); CSR PEM/DER handling via BouncyCastle; ECC named-curve validation; the process-local enrollment dedup cache (5-min, keyed org\|product\|subject\|csr); `MarkMonitorCertificateStatusToCAStatus` mapping; `BuildErrorString` error parsing; org/contact/group resolution; `SendWithRetryAsync` (3-attempt retry with jittered exponential backoff on network failures/timeouts and 5xx/429, honoring `Retry-After` on 429 - **not** used for the order-create POST or the reissue PATCH, both of which risk creating a duplicate billable resource on an ambiguous failure); `HttpClient.Timeout` from the `TimeoutSeconds` config field (default 120s). |
+| `MarkMonitorCAConnector.cs` | `IAnyCAPlugin` entry point. Methods the Gateway host calls: `Initialize`, `Enroll`, `Revoke`, `Synchronize`, `GetSingleRecord`, `Ping`, `ValidateCAConnectionInfo` (field checks, then a live auth + org-list call via a transient client - never `_cachedClient`), `ValidateProductInfo` (cheap static `ProductID` enum check only - contact/group stay a no-op), `GetProductIds`, `GetCAConnectorAnnotations` / `GetTemplateParameterAnnotations`. `BuildClient(MarkMonitorConfig)` is the one place the client-construction argument list lives, shared by the cached-client path and `ValidateCAConnectionInfo`'s transient one. Holds the deserialized config and one lazily-built, cached `MarkMonitorClient` (`CreateAndAuthenticateClientAsync`). Contains the `RenewOrReissue` → revoke-prior logic (`ParseRenewalWindowDays` logs a warning, not a silent fallback, when the template param is present but invalid) and the `EnsureOrgNameConfigured` guard. |
+| `Client/MarkMonitorClient.cs` | The MarkMonitor REST HTTP client. Owns: bearer-token auth (`X-API-KEY` header + username/password → token, cached with 30s early-expiry, double-checked locking); list pagination (`MarkMonitorPage.TotalPages`); CSR PEM/DER handling via BouncyCastle; ECC named-curve validation; the process-local enrollment dedup cache (5-min, keyed org\|product\|subject\|csr); `MarkMonitorCertificateStatusToCAStatus` mapping; `BuildErrorString` error parsing; org/contact/group resolution; `SendWithRetryAsync` (3-attempt retry with jittered exponential backoff on network failures/timeouts and 5xx/429, honoring `Retry-After` on 429 - **not** used for the order-create POST or the reissue PATCH, both of which risk creating a duplicate billable resource on an ambiguous failure); `HttpClient.Timeout` from the `TimeoutSeconds` config field (default 120s, clamped 1-120 - never above the pre-existing hardcoded default). |
 | `MarkMonitorCAPluginConfig.cs` | CA-connection + enrollment-parameter schema, UI annotations/defaults, and canonical field-name constants: `ConfigConstants` (ApiKey, Username, Password=`"Password"`, BaseUrl, OrgId=`"OrgId"`, Enabled, TimeoutSeconds, PageSize, ForceCompleteSync, PickupRetries, PickupDelaySeconds) and `EnrollmentConfigConstants` (AdditionalEmails, MarkmonitorGroup, MarkmonitorContact, DCVMethod, comments, locale, provider, RenewalWindowDays). Also `ConfigurationValidationException`. |
 | `MarkMonitorConfig.cs` | The deserialized CA-connection config type used at runtime. |
 | `Models/` | Request/response DTOs (orders, organizations, contacts, groups, token) + `Enums.cs`. |
@@ -74,10 +74,14 @@ MarkMonitor's SSL API is backed by **DigiCert** (the only `provider` it supports
 - **Sync:** `GET /certs/v1/order` paginated (size from the `PageSize` config field, default 100),
   map status, assemble full chain, buffer issued certs. Still **always a full listing** —
   `lastSync`/date filtering not yet used — but each record is now checked against
-  `ICertificateDataReader` and skipped if Command already has it at the same status (skip-unchanged);
-  `ForceCompleteSync` (config) or Command's own `fullSync` flag bypasses that. A bad individual
-  record is logged + counted + skipped rather than aborting the sync, but an error rate over 25%
-  (once ≥50 records observed) aborts the whole sync as a circuit breaker.
+  `ICertificateDataReader` and skipped if Command already has it at both the same mapped status
+  *and* the same expiration date (skip-unchanged) - comparing only status would otherwise treat an
+  out-of-band MarkMonitor reissue of the same order ID (which round-trips DIGI_ISSUED →
+  DIGI_REISSUE_PENDING → DIGI_ISSUED) as unchanged if a sync happens to straddle just the before/
+  after of that round-trip; `ForceCompleteSync` (config) or Command's own `fullSync` flag bypasses
+  the optimization entirely. A bad individual record is logged + counted + skipped rather than
+  aborting the sync, but an error rate over 25% (once ≥50 records observed) aborts the whole sync as
+  a circuit breaker.
 
 ### MarkMonitor endpoints
 

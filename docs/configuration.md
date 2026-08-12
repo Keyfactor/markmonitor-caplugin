@@ -31,11 +31,11 @@ field except `Enabled` must be filled in before the connector can be saved and e
 | `BaseUrl` | Yes | No | `https://api.markmonitor.com` | The MarkMonitor API address. Must start with `https://`. |
 | `OrgId` | Yes | No | — | Your MarkMonitor organization — either its name (e.g. `MarkMonitor`) or its ID in GUID format. Used both to scope enrollment and to confirm ownership before a revoke. |
 | `Enabled` | No | No | `true` | Turns the connector on or off. Useful for saving a connector before all configuration details are ready. |
-| `TimeoutSeconds` | No | No | `120` | How long, in seconds, to wait on a single MarkMonitor API call before giving up. |
+| `TimeoutSeconds` | No | No | `120` | How long, in seconds, to wait on a single MarkMonitor API call before giving up. Clamped to 1-120. |
 | `PageSize` | No | No | `100` | How many certificate orders to request per page during synchronization (1-500). |
 | `ForceCompleteSync` | No | No | `false` | When `true`, re-imports every order on every sync instead of skipping ones that haven't changed. |
-| `PickupRetries` | No | No | `5` | How many times enrollment polls a freshly-created order for issuance before giving up and returning it pending. `0` turns this off. |
-| `PickupDelaySeconds` | No | No | `10` | How long to wait between issuance pickup polls. |
+| `PickupRetries` | No | No | `5` | How many times enrollment polls a freshly-created order for issuance before giving up and returning it pending. `0` turns this off. Clamped to 0-20. |
+| `PickupDelaySeconds` | No | No | `10` | How long to wait between issuance pickup polls. Clamped to 0-60. |
 
 Your API key and password are encrypted in Command's gateway configuration, masked in the UI, and
 never written to logs.

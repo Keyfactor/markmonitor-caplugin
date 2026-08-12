@@ -361,9 +361,19 @@ public class MarkMonitorClient : IDisposable
         _logger.LogTrace("Certificate {CertificateId} status: {CertificateStatus}", certificateDetail.Id,
             certStatus);
 
+        // Status alone isn't enough to prove nothing changed: MarkMonitor's own status model
+        // round-trips DIGI_ISSUED -> DIGI_REISSUE_PENDING -> DIGI_ISSUED for an out-of-band reissue
+        // of the same order ID (see Enums.cs's OrderStatus), so a sync that happens to observe the
+        // order only before and after that round-trip would otherwise see the same status both times
+        // and skip forever - silently masking a real certificate rotation from Command's inventory.
+        // Expiration date changes on reissue (a new cert has a new validity window), so comparing it
+        // too - using the same ICertificateDataReader lookup RenewOrReissue already relies on -
+        // catches that case without needing a "get current serial by request ID" method the
+        // interface doesn't expose.
         if (!forceCompleteSync && certificateDataReader != null &&
             await certificateDataReader.DoesCertExistForRequestID(certificateDetail.Id) &&
-            await certificateDataReader.GetStatusByRequestID(certificateDetail.Id) == certStatus)
+            await certificateDataReader.GetStatusByRequestID(certificateDetail.Id) == certStatus &&
+            certificateDataReader.GetExpirationDateByRequestId(certificateDetail.Id) == certificateDetail.Cert.DateValidUntil)
         {
             _logger.LogTrace(
                 "Certificate {CertificateId} is unchanged (status {CertificateStatus}) - skipping re-emission",
@@ -679,7 +689,7 @@ public class MarkMonitorClient : IDisposable
     /// </summary>
     private async Task<OrderContent> PollForIssuanceAsync(OrderContent order, MarkMonitorConfig config)
     {
-        if (config.PickupRetries <= 0 || IsIssuedWithCert(order) || IsTerminalNonIssuedStatus(order)) return order;
+        if (config.PickupRetries <= 0 || IsPollingComplete(order)) return order;
 
         var delay = TimeSpan.FromSeconds(config.PickupDelaySeconds);
         for (var attempt = 1; attempt <= config.PickupRetries; attempt++)
@@ -702,7 +712,7 @@ public class MarkMonitorClient : IDisposable
             }
 
             order = polled;
-            if (IsIssuedWithCert(order) || IsTerminalNonIssuedStatus(order)) break;
+            if (IsPollingComplete(order)) break;
         }
 
         _logger.LogInformation(
@@ -711,16 +721,14 @@ public class MarkMonitorClient : IDisposable
         return order;
     }
 
-    private bool IsIssuedWithCert(OrderContent order) =>
-        MarkMonitorCertificateStatusToCAStatus(order) == (int)EndEntityStatus.GENERATED &&
-        order.Cert?.EndEntityCert != null;
-
-    // No point spending the rest of the poll budget once the order has reached a terminal state that
-    // will never produce a certificate.
-    private bool IsTerminalNonIssuedStatus(OrderContent order)
+    // True once the order has either issued (with a cert body actually present) or reached a
+    // terminal state that will never produce one - no point spending the rest of the poll budget
+    // either way.
+    private bool IsPollingComplete(OrderContent order)
     {
         var status = MarkMonitorCertificateStatusToCAStatus(order);
-        return status == (int)EndEntityStatus.FAILED || status == (int)EndEntityStatus.CANCELLED ||
+        return (status == (int)EndEntityStatus.GENERATED && order.Cert?.EndEntityCert != null) ||
+               status == (int)EndEntityStatus.FAILED || status == (int)EndEntityStatus.CANCELLED ||
                status == (int)EndEntityStatus.REVOKED;
     }
 

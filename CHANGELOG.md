@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- The MarkMonitor client now retries idempotent GETs, authentication, and cancel/revoke calls up to
+  3 times on a network failure/timeout or an HTTP 5xx/429 response, with jittered exponential
+  backoff (honoring `Retry-After` on 429). The order-create POST and reissue PATCH are deliberately
+  excluded - retrying either risks creating a duplicate, billable MarkMonitor resource on an
+  ambiguous failure.
+- A new `TimeoutSeconds` CA connection field (default 120) sets the HTTP request timeout for calls
+  to the MarkMonitor API.
+- `Synchronize` now isolates per-record failures (a bad status string, bad date, or null field on
+  one order is logged, counted, and skipped instead of aborting the entire sync), with an error-rate
+  circuit breaker that aborts the sync outright if more than 25% of records fail once at least 50
+  have been observed. Unchanged orders are now skipped rather than re-emitted on every sync
+  (bypassed by the new `ForceCompleteSync` connection field, or Command's own full-sync flag). A new
+  `PageSize` connection field (default 100, clamped to 1-500) replaces the hardcoded sync page size.
+- A new `RenewalWindowDays` template parameter (default 90) gates whether a `RenewOrReissue`
+  enrollment revokes the certificate it's replacing - only when that certificate's resolvable
+  expiration falls within the window. A prior certificate with substantial life left outside the
+  window is left unrevoked, and the enrollment behaves like a plain new issuance instead.
+
 ### Fixed
 
 - Multi-SAN enrollments now issue with every requested DNS SAN instead of just the CN - `Enroll`'s

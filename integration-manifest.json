@@ -36,6 +36,18 @@
                 {
                     "name": "Enabled",
                     "description": "Flag to Enable or Disable gateway functionality. Disabling is primarily used to allow creation of the CA prior to configuration information being available."
+                },
+                {
+                    "name": "TimeoutSeconds",
+                    "description": "The HTTP request timeout, in seconds, for calls to the MarkMonitor API. Default is 120."
+                },
+                {
+                    "name": "PageSize",
+                    "description": "The number of certificate orders requested per page during synchronization (1-500). Default is 100."
+                },
+                {
+                    "name": "ForceCompleteSync",
+                    "description": "When true, bypasses the skip-unchanged optimization and re-emits every order on every synchronization. Default is false."
                 }
             ],
             "enrollment_config": [
@@ -66,6 +78,10 @@
                 {
                     "name": "provider",
                     "description": "The certificate provider to use for the order. Default is \"DIGICERT\" (currently the only provider MarkMonitor's API supports)."
+                },
+                {
+                    "name": "RenewalWindowDays",
+                    "description": "For a RenewOrReissue enrollment, how many days before its expiration a prior certificate must be within before it is revoked after being replaced. Outside this window, the prior certificate is left unrevoked and the request is treated like a plain new issuance. Default is 90."
                 }
             ],
             "product_ids": [

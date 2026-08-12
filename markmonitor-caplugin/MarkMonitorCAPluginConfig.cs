@@ -160,6 +160,14 @@ public class MarkMonitorCAPluginConfig
                 Hidden = false,
                 DefaultValue = "DIGICERT",
                 Type = "String"
+            },
+            [EnrollmentConfigConstants.RenewalWindowDays] = new()
+            {
+                Comments =
+                    "For a RenewOrReissue enrollment, how many days before its expiration a prior certificate must be within before it is revoked after being replaced. Outside this window, the prior certificate is left unrevoked and the request is treated like a plain new issuance. Default is 90.",
+                Hidden = false,
+                DefaultValue = 90,
+                Type = "Number"
             }
         };
     }
@@ -282,5 +290,9 @@ public class MarkMonitorCAPluginConfig
         /// The certificate provider parameter name.
         /// </summary>
         public const string Provider = "provider";
+        /// <summary>
+        /// The renewal window (days) parameter name.
+        /// </summary>
+        public const string RenewalWindowDays = "RenewalWindowDays";
     }
 }

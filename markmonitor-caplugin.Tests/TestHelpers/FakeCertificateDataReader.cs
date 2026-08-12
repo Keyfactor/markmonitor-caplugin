@@ -28,5 +28,8 @@ public class FakeCertificateDataReader : ICertificateDataReader
     public Task<string> GetRequestIDBySerialNumber(string serialNumber) =>
         Task.FromResult(SerialNumberToRequestId.GetValueOrDefault(serialNumber, string.Empty));
 
-    public DateTime? GetExpirationDateByRequestId(string caRequestID) => null;
+    public Dictionary<string, DateTime> ExpirationDateByRequestId { get; } = new();
+
+    public DateTime? GetExpirationDateByRequestId(string caRequestID) =>
+        ExpirationDateByRequestId.TryGetValue(caRequestID, out var expiration) ? expiration : null;
 }

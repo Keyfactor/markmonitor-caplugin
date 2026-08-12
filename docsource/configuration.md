@@ -84,6 +84,9 @@ must be provided before the connector can be saved in an enabled state.
 | `BaseUrl` | Required | No | `https://api.markmonitor.com` | The MarkMonitor API base URL. Must start with `https://` — credentials and the bearer token are sent to it. |
 | `OrgId` | Required | No | *(none)* | The MarkMonitor organization to use for API calls. Accepts either the organization **name** (e.g. `MarkMonitor`) or its **ID in GUID format**. Used to scope enrollment and to verify ownership on revoke. |
 | `Enabled` | Optional | No | `true` | Enables or disables gateway functionality. Disable to allow the CA to be created before configuration information is available. |
+| `TimeoutSeconds` | Optional | No | `120` | The HTTP request timeout, in seconds, for calls to the MarkMonitor API. |
+| `PageSize` | Optional | No | `100` | The number of certificate orders requested per page during synchronization. Clamped to 1-500. |
+| `ForceCompleteSync` | Optional | No | `false` | When `true`, bypasses the skip-unchanged synchronization optimization and re-emits every order on every sync. |
 
 > **Note:** Credentials are stored in Keyfactor Command's encrypted gateway configuration. `ApiKey`
 > and `Password` are masked in the UI and are never written to logs by the plugin.
@@ -114,6 +117,7 @@ enrollment time.
 | `comments` | String | `Requested via Keyfactor Command` | Free-text comments attached to the MarkMonitor order. |
 | `locale` | String | `en` | Locale for the MarkMonitor order. |
 | `provider` | String | `DIGICERT` | The certificate provider for the order. `DIGICERT` is currently the only provider the MarkMonitor API supports. |
+| `RenewalWindowDays` | Number | `90` | For a `RenewOrReissue` enrollment, how many days before its expiration the prior certificate must be within before it's revoked after the replacement issues. Outside that window, the prior certificate is left unrevoked and the request is treated like a plain new issuance. An invalid (non-numeric or non-positive) value falls back to the default. |
 
 > **Note on DCV:** The plugin passes the selected `DCVMethod` to MarkMonitor but does not itself
 > automate DNS/HTTP token publication. For `EMAIL` (the default), MarkMonitor falls back to the
@@ -202,18 +206,31 @@ sequenceDiagram
                 Plugin->>Plugin: Skip for this sync
             else Order has a certificate
                 Plugin->>Plugin: Map the MarkMonitor status to a Keyfactor status
-                Plugin->>Plugin: Assemble the full certificate chain
-                Plugin->>CMD: Add certificate to Command's inventory
+                alt Unchanged since Command's last known status (and not forced)
+                    Plugin->>Plugin: Skip re-emission
+                else New or changed
+                    Plugin->>Plugin: Assemble the full certificate chain
+                    Plugin->>CMD: Add certificate to Command's inventory
+                end
             end
         end
     end
 
-    Plugin-->>CMD: Synchronization complete
+    Plugin-->>CMD: Synchronization complete (emitted / skipped-unchanged / errored counts)
 ```
 
+> A record that fails to process is logged, counted, and skipped rather than aborting the sync - but
+> the sync aborts outright if more than 25% of records fail once at least 50 have been observed.
+
 > The current implementation always performs a full listing of orders on each sync, rather than only
-> retrieving certificates that changed since the last sync. Orders that have not yet produced a
-> certificate are simply skipped for that sync rather than treated as an error.
+> retrieving certificates that changed since the last sync - `PageSize` optimizes the *mitigation*, not
+> the listing itself: each order is compared against what Command already has for that request ID, and
+> skipped (not re-emitted) when the status is unchanged, unless `ForceCompleteSync` is enabled or
+> Command requests a full sync. Orders that have not yet produced a certificate are simply skipped for
+> that sync rather than treated as an error. A record that fails to process (bad status string, bad
+> date, unexpected null) is logged and skipped rather than aborting the sync - but if more than 25% of
+> records fail once at least 50 have been observed, the sync aborts outright rather than reporting a
+> quietly near-empty "success".
 
 ### Certificate Enrollment (including Renewal / Reissue)
 
@@ -251,9 +268,11 @@ sequenceDiagram
 
 MarkMonitor has no in-place "renew" enrollment endpoint through this plugin, so a Renewal/Reissue
 request always places a brand-new order. Once the replacement certificate has been created
-successfully, the plugin revokes the certificate it is replacing. If the certificate being replaced
-can't be identified, the request is simply treated as a new issuance — a failure to revoke the old
-certificate never blocks delivery of the new one.
+successfully, the plugin revokes the certificate it is replacing — but only if that certificate is
+within its `RenewalWindowDays` template parameter (default 90) of expiring. If the certificate being
+replaced can't be identified, or still has substantial life left (outside the renewal window), the
+request is simply treated as a new issuance and the prior certificate is left alone — a failure to
+revoke the old certificate never blocks delivery of the new one either.
 
 ### Revocation
 

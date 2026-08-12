@@ -234,13 +234,20 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         }
     }
 
+    private const int DefaultRenewalWindowDays = 90;
+
     /// <summary>
     /// For a RenewOrReissue enrollment, the AnyGateway core framework passes the prior
     /// certificate's serial number in productInfo.ProductParameters["PriorCertSN"]. Resolves it to a
     /// CARequestID via the injected ICertificateDataReader and revokes it now that the replacement
-    /// certificate has issued successfully. Falls back to treating the enrollment as a plain new
-    /// issuance (no revoke attempted) if PriorCertSN is missing or can't be resolved - a failure to
-    /// revoke the old certificate should not fail delivery of the new one.
+    /// certificate has issued successfully - but only when the prior certificate is actually within
+    /// its <c>RenewalWindowDays</c> template parameter (default 90) of expiring; certinext's model,
+    /// applied here since MarkMonitor likewise has no in-place "renew" endpoint, so the window gates
+    /// revoke behavior rather than endpoint choice. A prior cert with substantial life left outside
+    /// that window is left unrevoked - this "renewal" is instead treated like a plain new issuance.
+    /// Falls back to treating the enrollment as a plain new issuance (no revoke attempted) if
+    /// PriorCertSN is missing or can't be resolved - a failure to revoke the old certificate should
+    /// not fail delivery of the new one.
     /// </summary>
     private async Task RevokePriorCertificateIfPresentAsync(MarkMonitorClient client,
         EnrollmentProductInfo productInfo, string subject, string newCaRequestId)
@@ -269,6 +276,22 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             return;
         }
 
+        var renewalWindowDays = ParseRenewalWindowDays(productInfo.ProductParameters);
+        var priorCertExpiration = _certificateDataReader.GetExpirationDateByRequestId(priorRequestId);
+        if (priorCertExpiration != null)
+        {
+            var daysUntilExpiration = (priorCertExpiration.Value - DateTime.UtcNow).TotalDays;
+            if (daysUntilExpiration > renewalWindowDays)
+            {
+                _logger.LogInformation(
+                    "Prior certificate {PriorRequestId} does not expire for {DaysUntilExpiration:F0} more day(s), outside the configured RenewalWindowDays ({RenewalWindowDays}) - leaving it unrevoked and treating this enrollment like a plain new issuance",
+                    priorRequestId, daysUntilExpiration, renewalWindowDays);
+                return;
+            }
+        }
+        // Expiration unresolvable (null): fall back to the pre-existing behavior (always revoke)
+        // rather than silently changing behavior when there isn't enough data to apply the new gate.
+
         try
         {
             EnsureOrgNameConfigured();
@@ -284,6 +307,18 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
                 "Failed to revoke prior certificate {PriorRequestId} after it was replaced by {NewCaRequestId}: {EMessage}",
                 priorRequestId, newCaRequestId, e.Message);
         }
+    }
+
+    /// <summary>Parses the RenewalWindowDays template parameter (case-insensitive key, matching
+    /// every other enrollment parameter lookup in this file); absent or invalid (non-positive,
+    /// non-numeric) falls back to <see cref="DefaultRenewalWindowDays"/> rather than failing the
+    /// enrollment over a template misconfiguration.</summary>
+    private static int ParseRenewalWindowDays(Dictionary<string, string> productParameters)
+    {
+        var raw = productParameters?
+            .FirstOrDefault(kv => string.Equals(kv.Key, "RenewalWindowDays", StringComparison.OrdinalIgnoreCase))
+            .Value;
+        return int.TryParse(raw, out var parsed) && parsed > 0 ? parsed : DefaultRenewalWindowDays;
     }
 
     /// <summary>

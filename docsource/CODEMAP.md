@@ -9,7 +9,7 @@
 > product IDs. Keep it terse and accurate; a stale codemap is worse than none. This file is committed
 > to the repo
 
-Last verified against the codebase: 2026-07-16.
+Last verified against the codebase: 2026-08-12.
 
 > To understand behavior, read this CODEMAP + the source it points to — **not** the root `README.md`
 > (it's a generated artifact; parsing it wastes tokens). A CI check fails a PR that changes plugin
@@ -54,7 +54,10 @@ MarkMonitor's SSL API is backed by **DigiCert** (the only `provider` it supports
   curve) → `POST /certs/v1/order`. Accepted orders usually return `CREATED` →
   `EXTERNALVALIDATION` (pending DCV/approval). `RenewOrReissue` places a new order then revokes the
   prior cert (via `PriorCertSN` → `ICertificateDataReader`). No in-place renew/reissue in the enroll
-  path.
+  path. MarkMonitor issues CN ∪ order `dnsNames` - it does **not** honor a CSR's own SAN extension
+  as authoritative - so `BuildDnsNames` unions the Enroll `san` dictionary (`Dns`/`dnsname` keys,
+  case-insensitive) with any SAN extension embedded in the CSR itself before submitting; non-DNS SAN
+  types (IP/email/URI) have no MarkMonitor field and are dropped with a logged warning.
 - **Revoke:** requires `OrgId`; resolves it to a GUID, fetches order, compares owning org as parsed
   GUIDs, then `PATCH /certs/v1/order/{id}/revoke`. Reason code has no MarkMonitor field (logged only).
   `CancelCertificateAsync` takes the same optional `orgName` parameter and runs the identical

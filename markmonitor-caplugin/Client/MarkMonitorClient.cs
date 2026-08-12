@@ -882,6 +882,9 @@ public class MarkMonitorClient : IDisposable
             _logger.LogDebug("Converting CSR to PEM");
             var csrPem = PemUtilities.DERToPEM(csrObject.GetEncoded(), PemUtilities.PemObjectType.CertRequest);
 
+            var commonName = cleanSubject(subject);
+            var dnsNames = BuildDnsNames(csrObject, commonName, san);
+
             _logger.LogDebug("Constructing certificate order object");
             var certOrder = new MarkMonitorCreateOrderRequest
             {
@@ -896,7 +899,8 @@ public class MarkMonitorClient : IDisposable
                 Provider = provider,
                 Cert = new MarkMonitorOrderRequestCert
                 {
-                    CommonName = cleanSubject(subject),
+                    CommonName = commonName,
+                    DnsNames = dnsNames,
                     Csr = csrPem.Replace("\r", ""),
                     DcvMethod = dcvMethod,
                     // dcvEmails is not marked required by MarkMonitor's schema, and leaving it empty
@@ -1087,6 +1091,64 @@ public class MarkMonitorClient : IDisposable
                ?? contacts.FirstOrDefault();
     }
 
+    /// <summary>
+    /// MarkMonitor's API does not use the submitted CSR to determine a certificate's issued SAN
+    /// list - real captured orders (and DigiCert's own docs, MarkMonitor's sole provider) show the
+    /// issued SANs are the union of the order's <c>commonName</c> and its own <c>dnsNames</c> field.
+    /// A CSR's SAN extension is ignored server-side unless those same names are also placed in
+    /// <c>dnsNames</c> here - so both the Command-supplied <paramref name="san"/> dictionary and any
+    /// SAN extension embedded in <paramref name="csrObject"/> itself are unioned into one list.
+    /// Non-DNS SAN types (IP/email/URI) have no field in MarkMonitor's order schema and are dropped
+    /// with a logged warning rather than failing the enrollment.
+    /// </summary>
+    private List<string> BuildDnsNames(Pkcs10CertificationRequest csrObject, string commonName,
+        Dictionary<string, string[]> san)
+    {
+        var dnsNames = new List<string>();
+        var droppedTypes = new List<string>();
+
+        if (san != null)
+            foreach (var entry in san)
+            {
+                if (entry.Value == null) continue;
+
+                // Command's SAN type keys (e.g. "Dns"/"dnsname") vary in casing across gateways -
+                // matched case-insensitively, mirroring digicert-certcentral-caplugin's own
+                // defensive handling of the same ambiguity.
+                if (string.Equals(entry.Key, "dns", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(entry.Key, "dnsname", StringComparison.OrdinalIgnoreCase))
+                    dnsNames.AddRange(entry.Value.Where(v => !string.IsNullOrWhiteSpace(v)));
+                else if (entry.Value.Length > 0)
+                    droppedTypes.Add(entry.Key);
+            }
+
+        if (droppedTypes.Count > 0)
+            _logger.LogWarning(
+                "MarkMonitor's order schema has no field for non-DNS SAN type(s) {DroppedSanTypes} - they were requested but will not be included on this order",
+                LogSanitizer.ForLog(string.Join(", ", droppedTypes)));
+
+        var requestedExtensions = csrObject.GetRequestedExtensions();
+        var sanExtension = requestedExtensions?.GetExtension(X509Extensions.SubjectAlternativeName);
+        if (sanExtension != null)
+        {
+            var generalNames = GeneralNames.GetInstance(sanExtension.GetParsedValue());
+            dnsNames.AddRange(generalNames.GetNames()
+                .Where(name => name.TagNo == GeneralName.DnsName)
+                .Select(name => name.Name.ToString()));
+        }
+
+        // The CN is submitted separately as Cert.CommonName, and MarkMonitor issues CN ∪ dnsNames -
+        // repeating it in dnsNames would be redundant, so it's excluded here to keep the request
+        // minimal.
+        var distinctDnsNames = dnsNames
+            .Where(name => !string.IsNullOrWhiteSpace(name) &&
+                           !string.Equals(name, commonName, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return distinctDnsNames.Count > 0 ? distinctDnsNames : null;
+    }
+
     private string cleanSubject(string subject)
     {
         _logger.MethodEntry();
@@ -1125,6 +1187,8 @@ public class MarkMonitorClient : IDisposable
     {
         _logger.MethodEntry();
         _logger.LogTrace("CommonName: {CommonName}", LogSanitizer.ForLog(request.Cert.CommonName));
+        _logger.LogTrace("DnsNames: {DnsNames}",
+            LogSanitizer.ForLog(request.Cert.DnsNames != null ? string.Join(",", request.Cert.DnsNames) : null));
         _logger.LogTrace("OrganizationId: {OrganizationId}", request.OrganizationId);
         _logger.LogTrace("GroupId: {GroupId}", request.GroupId);
         _logger.LogTrace("CertType: {CertType}", request.CertType);

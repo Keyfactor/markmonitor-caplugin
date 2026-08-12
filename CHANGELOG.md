@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Multi-SAN enrollments now issue with every requested DNS SAN instead of just the CN - `Enroll`'s
+  `san` dictionary (and any SAN extension embedded directly in the submitted CSR) is now wired into
+  the MarkMonitor order's `dnsNames` field. MarkMonitor issues CN ∪ `dnsNames` and does not honor a
+  CSR's own SAN extension as authoritative, so previously a multi-SAN request silently issued
+  CN-only. Non-DNS SAN types (IP/email/URI) have no field in MarkMonitor's order schema and are
+  dropped with a logged warning rather than failing the enrollment.
+
 ### Breaking Changes
 
 - Removed the `CertificateValidityInYears`, `Email`, and `OrganizationName` template enrollment

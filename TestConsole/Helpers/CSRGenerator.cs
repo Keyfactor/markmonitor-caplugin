@@ -117,7 +117,12 @@ public class CsrGenerator
     {
         var keyPairGen = new ECKeyPairGenerator();
         var ecSpec = SecNamedCurves.GetByName("secp256r1"); // P-256 curve
-        var ecDomainParams = new ECDomainParameters(ecSpec.Curve, ecSpec.G, ecSpec.N, ecSpec.H);
+        // ECNamedDomainParameters (not plain ECDomainParameters) is required so the CSR's
+        // SubjectPublicKeyInfo references the named curve by OID rather than spelling out explicit
+        // curve parameters (prime/coefficients/base point) - CA/Browser Forum baseline requirements
+        // disallow explicit EC parameters for publicly-trusted certs, and DigiCert silently rejects
+        // such a CSR (order fails almost instantly, with no reason surfaced via MarkMonitor's API).
+        var ecDomainParams = new ECNamedDomainParameters(SecObjectIdentifiers.SecP256r1, ecSpec);
         var keyGenParams =
             new ECKeyGenerationParameters(ecDomainParams, new SecureRandom(new CryptoApiRandomGenerator()));
         keyPairGen.Init(keyGenParams);

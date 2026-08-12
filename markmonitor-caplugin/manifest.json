@@ -1,0 +1,10 @@
+{
+  "extensions": {
+    "Keyfactor.AnyGateway.Extensions.IAnyCAPlugin": {
+      "MarkMonitorCAPlugin": {
+        "assemblypath": "MarkMonitorCAPlugin.dll",
+        "TypeFullName": "Keyfactor.Extensions.CAPlugin.MarkMonitor.MarkMonitorCAPlugin"
+      }
+    }
+  }
+}

@@ -74,6 +74,29 @@ public class MarkMonitorCAPluginConfig
                 Hidden = false,
                 DefaultValue = true,
                 Type = "Boolean"
+            },
+            [ConfigConstants.TimeoutSeconds] = new()
+            {
+                Comments = "The HTTP request timeout, in seconds, for calls to the MarkMonitor API. Default is 120.",
+                Hidden = false,
+                DefaultValue = 120,
+                Type = "Number"
+            },
+            [ConfigConstants.PageSize] = new()
+            {
+                Comments =
+                    "The number of certificate orders requested per page during synchronization (1-500). Default is 100.",
+                Hidden = false,
+                DefaultValue = 100,
+                Type = "Number"
+            },
+            [ConfigConstants.ForceCompleteSync] = new()
+            {
+                Comments =
+                    "When true, bypasses the skip-unchanged optimization and re-emits every order on every synchronization. Default is false.",
+                Hidden = false,
+                DefaultValue = false,
+                Type = "Boolean"
             }
         };
     }
@@ -170,6 +193,18 @@ public class MarkMonitorCAPluginConfig
         /// The enabled flag property name.
         /// </summary>
         public const string Enabled = "Enabled";
+        /// <summary>
+        /// The HTTP request timeout (seconds) property name.
+        /// </summary>
+        public const string TimeoutSeconds = "TimeoutSeconds";
+        /// <summary>
+        /// The sync page size property name.
+        /// </summary>
+        public const string PageSize = "PageSize";
+        /// <summary>
+        /// The force-complete-sync flag property name.
+        /// </summary>
+        public const string ForceCompleteSync = "ForceCompleteSync";
     }
 
     /// <summary>

@@ -100,7 +100,12 @@ public sealed class FakeHttpMessageHandler : HttpMessageHandler
     }
 
     /// <summary>Builds a MarkMonitorClient wired to this fake handler, using the same
-    /// base URL/credentials every test uses since they're never actually sent anywhere real.</summary>
-    public MarkMonitorClient BuildClient(TimeProvider? timeProvider = null) =>
-        new("https://api.markmonitor.test", "key", "user", "pass", true, this, timeProvider);
+    /// base URL/credentials every test uses since they're never actually sent anywhere real. Retry
+    /// backoff delays are instant by default (no test wants a multi-second real sleep just because a
+    /// route happens to return a 5xx/429/network failure) - pass `delay` to observe or slow down the
+    /// schedule a test actually cares about verifying.</summary>
+    public MarkMonitorClient BuildClient(TimeProvider? timeProvider = null,
+        Func<TimeSpan, CancellationToken, Task>? delay = null) =>
+        new("https://api.markmonitor.test", "key", "user", "pass", true, this, timeProvider,
+            delay: delay ?? ((_, _) => Task.CompletedTask));
 }

@@ -28,6 +28,16 @@ public class MarkMonitorClient : IDisposable
     private string _username;
     private readonly TimeProvider _timeProvider;
     private readonly SemaphoreSlim _authLock = new(1, 1);
+    private readonly Func<TimeSpan, CancellationToken, Task> _delay;
+    private readonly Random _retryJitter = new();
+
+    // Applies to idempotent GETs, auth, and destructive-but-idempotent PATCH calls
+    // (cancel/revoke - repeating either is a no-op, unlike a second order-create POST). Deliberately
+    // NOT used for CreateCertificateOrder's order-create POST - see EnrollCertificateAsync's own
+    // comments on why retrying that specific call risks creating a duplicate, billable MarkMonitor
+    // order that the enrollment dedup cache exists to prevent.
+    private const int MaxRetryAttempts = 3;
+    private static readonly TimeSpan RetryBaseDelay = TimeSpan.FromSeconds(1);
 
     // Guards against creating a duplicate MarkMonitor order when Command retries an Enroll call -
     // whether the first attempt is still in flight (the retry races it) or already finished but its
@@ -56,6 +66,10 @@ public class MarkMonitorClient : IDisposable
     /// rather than accumulating one permanent entry per successful enrollment.</summary>
     internal int RecentEnrollmentsCount => _recentEnrollments.Count;
 
+    /// <summary>Test-only visibility into the configured HTTP timeout, to assert that the
+    /// constructor's <c>timeoutSeconds</c> parameter actually reaches the underlying HttpClient.</summary>
+    internal TimeSpan HttpTimeout => _httpClient.Timeout;
+
     // A resolved organization/group GUID never changes for a given name - MarkMonitor doesn't let a
     // name be reassigned to a different org/group ID - so it's safe to cache indefinitely for this
     // client's lifetime (which is itself cached for the whole plugin instance's lifetime). Without
@@ -68,7 +82,8 @@ public class MarkMonitorClient : IDisposable
     private readonly ConcurrentDictionary<string, Guid> _resolvedGroupIdByName = new(StringComparer.OrdinalIgnoreCase);
 
     public MarkMonitorClient(string baseUrl, string apiKey, string username, string password, bool validateSsl = true,
-        HttpMessageHandler handler = null, TimeProvider timeProvider = null)
+        HttpMessageHandler handler = null, TimeProvider timeProvider = null, int timeoutSeconds = 120,
+        Func<TimeSpan, CancellationToken, Task> delay = null)
     {
         BaseUrl = baseUrl;
         _logger = LogHandler.GetClassLogger(GetType());
@@ -76,6 +91,9 @@ public class MarkMonitorClient : IDisposable
         _username = username;
         _password = password;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        // Task.Delay's own (TimeSpan, CancellationToken) signature matches this delegate exactly -
+        // a test can override it to observe/short-circuit backoff waits without a real sleep.
+        _delay = delay ?? Task.Delay;
 
         // A caller-supplied handler (e.g. a fake in tests) is used as-is; otherwise build the real
         // HttpClientHandler with the usual SSL validation behavior.
@@ -93,6 +111,7 @@ public class MarkMonitorClient : IDisposable
         }
 
         _httpClient = new HttpClient(handler);
+        _httpClient.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
         // Every request this client makes wants an "application/json" Accept header, and it never
         // changes for the client's lifetime - set it once here rather than in FetchOrderAsync, where
         // an Add() on every call (Accept is a collection, not a single-value property) with no
@@ -178,7 +197,7 @@ public class MarkMonitorClient : IDisposable
                 _username);
 
             _logger.LogDebug("Sending authentication request");
-            var response = await SendAndLogAsync(() => _httpClient.PostAsync(requestUrl,
+            var response = await SendWithRetryAsync(() => _httpClient.PostAsync(requestUrl,
                 new StringContent(JsonConvert.SerializeObject(requestBody), Encoding.UTF8, "application/json")),
                 "POST", requestUrl);
 
@@ -213,11 +232,32 @@ public class MarkMonitorClient : IDisposable
         }
     }
 
+    // A page-fetch failure is already retried by SendWithRetryAsync and, if still failing, aborts the
+    // whole sync (completeness beats partial silence) - this threshold instead guards against the
+    // *per-record* processing loop below: enough individual bad records (bad status string, bad
+    // date, null fields) that continuing to silently skip them would produce a "successful" sync
+    // that quietly imported almost nothing. Not evaluated until MinimumSampleSize records have been
+    // observed, so a handful of bad records early in a small org's sync can't trip it.
+    private const int SyncErrorRateMinimumSampleSize = 50;
+    private const double SyncErrorRateThreshold = 0.25;
+
+    private enum SyncRecordOutcome
+    {
+        Emitted,
+        SkippedNotReady,
+        SkippedUnchanged
+    }
+
     public async Task<int> GetCertificateInventoryAsync(string caId, string sort, int limit,
-        BlockingCollection<AnyCAPluginCertificate> certificatesBuffer, CancellationToken cancelToken)
+        BlockingCollection<AnyCAPluginCertificate> certificatesBuffer, CancellationToken cancelToken,
+        ICertificateDataReader certificateDataReader = null, bool forceCompleteSync = false)
     {
         _logger.MethodEntry();
-        var numberOfCertificates = 0;
+        var emittedCount = 0;
+        var skippedNotReadyCount = 0;
+        var skippedUnchangedCount = 0;
+        var erroredCount = 0;
+        var totalObserved = 0;
         try
         {
             await EnsureAuthenticatedAsync();
@@ -227,72 +267,57 @@ public class MarkMonitorClient : IDisposable
             // history into one in-memory list before this method ever touches the buffer - for a
             // large/long-lived org that meant unbounded peak memory and zero buffer throughput until
             // the entire (possibly huge) order history had downloaded.
-            await ListCertificateOrdersAsync(0, caId, sort, limit, cancelToken, page =>
+            await ListCertificateOrdersAsync(0, caId, sort, limit, cancelToken, async page =>
             {
                 _logger.LogDebug("Retrieved a page of '{CertificateCount}' certificate orders", page.Count);
                 foreach (var certificateDetail in page)
                 {
-                    _logger.LogInformation("Adding certificate {CertificateId} to buffer", certificateDetail.Id);
-
-                    if (certificateDetail.Cert == null)
+                    totalObserved++;
+                    try
                     {
-                        _logger.LogWarning(
-                            "Certificate {CertificateId} has no cert details yet (status {Status}) - skipping it for this sync rather than aborting the rest of the page",
-                            certificateDetail.Id, certificateDetail.Status);
-                        continue;
-                    }
-
-                    var certStatus = MarkMonitorCertificateStatusToCAStatus(certificateDetail);
-                    _logger.LogTrace("Certificate {CertificateId} status: {CertificateStatus}", certificateDetail.Id,
-                        certStatus);
-
-                    _logger.LogDebug("Converting certificate {CertificateId} revocation status {Status}",
-                        certificateDetail.Id, certificateDetail.Cert.RevokeStatus);
-                    DateTime? revocationDate = null;
-                    if (certificateDetail.Cert.RevokeStatus == "REVOKED")
-                    {
-                        _logger.LogDebug("Certificate {CertificateId} is revoked", certificateDetail.Id);
-                        revocationDate = Convert.ToDateTime(certificateDetail.Cert.DateValidUntil);
-                    }
-
-                    var fullChain = new StringBuilder();
-                    if (certificateDetail.Cert.EndEntityCert != null)
-                    {
-                        _logger.LogDebug("Adding end entity certificate to full chain for {CertificateId}",
-                            certificateDetail.Id);
-                        fullChain.AppendLine(certificateDetail.Cert.EndEntityCert);
-                    }
-                    if (certificateDetail.Cert.IntermediateCert != null)
-                    {
-                        _logger.LogDebug("Adding issuer certificate to full chain for {CertificateId}",
-                            certificateDetail.Id);
-                        fullChain.AppendLine(certificateDetail.Cert.IntermediateCert);
-                    }
-                    if (certificateDetail.Cert.RootCert != null)
-                    {
-                        _logger.LogDebug("Adding root certificate to full chain for {CertificateId}",
-                            certificateDetail.Id);
-                        fullChain.AppendLine(certificateDetail.Cert.RootCert);
-                    }
-
-                    certificatesBuffer.Add(
-                        new AnyCAPluginCertificate
+                        switch (await ProcessOneInventoryRecordAsync(certificateDetail, certificatesBuffer,
+                                    certificateDataReader, forceCompleteSync, cancelToken))
                         {
-                            CARequestID = certificateDetail.Id,
-                            Status = certStatus,
-                            Certificate = fullChain.ToString(),
-                            CSR = certificateDetail.Cert.Csr,
-                            ProductID = certificateDetail.CertType,
-                            RevocationDate = revocationDate,
-                            // RevocationReason = certificateDetail.Cert.RevokeStatus, // TODO: Not available in MarkMonitor API
-                        }, cancelToken);
-                    numberOfCertificates++;
-                    _logger.LogTrace("Total certificates added to buffer: {NumberOfCertificates}", numberOfCertificates);
+                            case SyncRecordOutcome.Emitted:
+                                emittedCount++;
+                                break;
+                            case SyncRecordOutcome.SkippedNotReady:
+                                skippedNotReadyCount++;
+                                break;
+                            case SyncRecordOutcome.SkippedUnchanged:
+                                skippedUnchangedCount++;
+                                break;
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception e)
+                    {
+                        // A single bad record (bad status string, bad date, null fields) must not abort
+                        // the rest of the page/sync - certinext's model. The error-rate circuit breaker
+                        // below is what catches this becoming systemic rather than a one-off.
+                        erroredCount++;
+                        _logger.LogError(
+                            "Error processing certificate order {CertificateId} during synchronization - skipping it and continuing: {EMessage}",
+                            certificateDetail?.Id, e.Message);
+                    }
+
+                    if (totalObserved >= SyncErrorRateMinimumSampleSize)
+                    {
+                        var errorRate = (double)erroredCount / totalObserved;
+                        if (errorRate > SyncErrorRateThreshold)
+                            throw new Exception(
+                                $"Aborting synchronization: {erroredCount} of {totalObserved} records processed so far have failed ({errorRate:P0}), exceeding the {SyncErrorRateThreshold:P0} error-rate threshold");
+                    }
                 }
             });
 
-            _logger.LogInformation("Retrieved {NumberOfCertificates} certificates", numberOfCertificates);
-            return numberOfCertificates;
+            _logger.LogInformation(
+                "Synchronization complete: {EmittedCount} emitted, {SkippedUnchangedCount} skipped (unchanged), {SkippedNotReadyCount} skipped (not ready), {ErroredCount} errored (of {TotalObserved} total)",
+                emittedCount, skippedUnchangedCount, skippedNotReadyCount, erroredCount, totalObserved);
+            return emittedCount;
         }
         catch (OperationCanceledException)
         {
@@ -309,6 +334,83 @@ public class MarkMonitorClient : IDisposable
             certificatesBuffer.CompleteAdding(); // Ensure buffer is completed even on cancellation
             _logger.MethodExit();
         }
+    }
+
+    /// <summary>
+    /// Processes a single sync record: adds it to <paramref name="certificatesBuffer"/> and returns
+    /// <see cref="SyncRecordOutcome.Emitted"/>, unless <paramref name="certificateDataReader"/> shows
+    /// Command already has this exact CARequestID at the exact status this record maps to - in which
+    /// case it's skipped (<see cref="SyncRecordOutcome.SkippedUnchanged"/>) rather than re-emitted for
+    /// no reason. <paramref name="forceCompleteSync"/> bypasses that optimization entirely. An order
+    /// with no cert details yet is skipped (<see cref="SyncRecordOutcome.SkippedNotReady"/>) without
+    /// being counted as an error - that's an expected "not ready yet" state, not a bad record.
+    /// </summary>
+    private async Task<SyncRecordOutcome> ProcessOneInventoryRecordAsync(OrderContent certificateDetail,
+        BlockingCollection<AnyCAPluginCertificate> certificatesBuffer, ICertificateDataReader certificateDataReader,
+        bool forceCompleteSync, CancellationToken cancelToken)
+    {
+        if (certificateDetail.Cert == null)
+        {
+            _logger.LogWarning(
+                "Certificate {CertificateId} has no cert details yet (status {Status}) - skipping it for this sync rather than aborting the rest of the page",
+                certificateDetail.Id, certificateDetail.Status);
+            return SyncRecordOutcome.SkippedNotReady;
+        }
+
+        var certStatus = MarkMonitorCertificateStatusToCAStatus(certificateDetail);
+        _logger.LogTrace("Certificate {CertificateId} status: {CertificateStatus}", certificateDetail.Id,
+            certStatus);
+
+        if (!forceCompleteSync && certificateDataReader != null &&
+            await certificateDataReader.DoesCertExistForRequestID(certificateDetail.Id) &&
+            await certificateDataReader.GetStatusByRequestID(certificateDetail.Id) == certStatus)
+        {
+            _logger.LogTrace(
+                "Certificate {CertificateId} is unchanged (status {CertificateStatus}) - skipping re-emission",
+                certificateDetail.Id, certStatus);
+            return SyncRecordOutcome.SkippedUnchanged;
+        }
+
+        _logger.LogInformation("Adding certificate {CertificateId} to buffer", certificateDetail.Id);
+        _logger.LogDebug("Converting certificate {CertificateId} revocation status {Status}",
+            certificateDetail.Id, certificateDetail.Cert.RevokeStatus);
+        DateTime? revocationDate = null;
+        if (certificateDetail.Cert.RevokeStatus == "REVOKED")
+        {
+            _logger.LogDebug("Certificate {CertificateId} is revoked", certificateDetail.Id);
+            revocationDate = Convert.ToDateTime(certificateDetail.Cert.DateValidUntil);
+        }
+
+        var fullChain = new StringBuilder();
+        if (certificateDetail.Cert.EndEntityCert != null)
+        {
+            _logger.LogDebug("Adding end entity certificate to full chain for {CertificateId}",
+                certificateDetail.Id);
+            fullChain.AppendLine(certificateDetail.Cert.EndEntityCert);
+        }
+        if (certificateDetail.Cert.IntermediateCert != null)
+        {
+            _logger.LogDebug("Adding issuer certificate to full chain for {CertificateId}", certificateDetail.Id);
+            fullChain.AppendLine(certificateDetail.Cert.IntermediateCert);
+        }
+        if (certificateDetail.Cert.RootCert != null)
+        {
+            _logger.LogDebug("Adding root certificate to full chain for {CertificateId}", certificateDetail.Id);
+            fullChain.AppendLine(certificateDetail.Cert.RootCert);
+        }
+
+        certificatesBuffer.Add(
+            new AnyCAPluginCertificate
+            {
+                CARequestID = certificateDetail.Id,
+                Status = certStatus,
+                Certificate = fullChain.ToString(),
+                CSR = certificateDetail.Cert.Csr,
+                ProductID = certificateDetail.CertType,
+                RevocationDate = revocationDate,
+                // RevocationReason = certificateDetail.Cert.RevokeStatus, // TODO: Not available in MarkMonitor API
+            }, cancelToken);
+        return SyncRecordOutcome.Emitted;
     }
 
     private List<string> BuildQueryString(int providerId, string orgId, string sort, int limit, int page)
@@ -345,7 +447,7 @@ public class MarkMonitorClient : IDisposable
     /// in memory and seeing zero progress until every page has downloaded. Omit it to get the
     /// original all-pages-in-one-list behavior every other caller relies on.</summary>
     public async Task<List<OrderContent>> ListCertificateOrdersAsync(int providerId, string orgId, string sort,
-        int limit, CancellationToken cancelToken = default, Action<List<OrderContent>> onPageReceived = null)
+        int limit, CancellationToken cancelToken = default, Func<List<OrderContent>, Task> onPageReceived = null)
     {
         _logger.MethodEntry();
         await EnsureAuthenticatedAsync();
@@ -371,7 +473,8 @@ public class MarkMonitorClient : IDisposable
                 _logger.LogTrace("Getting page \'{CurrentPage}\' of \'{Limit}\')", currentPage, limit);
 
                 _logger.LogDebug("Getting certificate orders from MarkMonitor {NextUrl}", nextUrl);
-                var response = await SendAndLogAsync(() => _httpClient.GetAsync(nextUrl, cancelToken), "GET", nextUrl);
+                var response = await SendWithRetryAsync(() => _httpClient.GetAsync(nextUrl, cancelToken), "GET",
+                    nextUrl, cancelToken);
 
                 _logger.LogDebug("Reading response content");
                 var content = await response.Content.ReadAsStringAsync();
@@ -381,7 +484,7 @@ public class MarkMonitorClient : IDisposable
                 _logger.LogDebug("Deserializing response content to MarkMonitorListOrdersResponse");
                 var certificateListResponse = JsonConvert.DeserializeObject<MarkMonitorListOrdersResponse>(content);
                 if (onPageReceived != null)
-                    onPageReceived(certificateListResponse.Content);
+                    await onPageReceived(certificateListResponse.Content);
                 else
                     output.AddRange(certificateListResponse.Content);
                 currentPage++;
@@ -432,7 +535,7 @@ public class MarkMonitorClient : IDisposable
                 _logger.LogTrace("Getting page \'{CurrentPage}\' of \'{Limit}\')", currentPage, limit);
 
                 _logger.LogDebug("Getting organizations from MarkMonitor {NextUrl}", nextUrl);
-                var response = await SendAndLogAsync(() => _httpClient.GetAsync(nextUrl), "GET", nextUrl);
+                var response = await SendWithRetryAsync(() => _httpClient.GetAsync(nextUrl), "GET", nextUrl);
 
                 _logger.LogDebug("Reading response content");
                 var content = await response.Content.ReadAsStringAsync();
@@ -476,7 +579,7 @@ public class MarkMonitorClient : IDisposable
             await EnsureAuthenticatedAsync();
             var url = $"{BaseUrl}/certs/v1/organization/{orgId}";
             _logger.LogDebug("Getting organization from MarkMonitor {Url}", url);
-            var response = await SendAndLogAsync(() => _httpClient.GetAsync(url), "GET", url);
+            var response = await SendWithRetryAsync(() => _httpClient.GetAsync(url), "GET", url);
             var content = await response.Content.ReadAsStringAsync();
 
             if (!response.IsSuccessStatusCode) throw new Exception(BuildErrorString(content));
@@ -516,7 +619,7 @@ public class MarkMonitorClient : IDisposable
                 if (query.Count > 0) nextUrl += "?" + string.Join("&", query);
 
                 _logger.LogDebug("Getting groups from MarkMonitor {NextUrl}", nextUrl);
-                var response = await SendAndLogAsync(() => _httpClient.GetAsync(nextUrl), "GET", nextUrl);
+                var response = await SendWithRetryAsync(() => _httpClient.GetAsync(nextUrl), "GET", nextUrl);
 
                 var content = await response.Content.ReadAsStringAsync();
                 if (!response.IsSuccessStatusCode) throw new Exception(BuildErrorString(content));
@@ -557,7 +660,7 @@ public class MarkMonitorClient : IDisposable
         // the shared HttpClient's Authorization header (see GitHub issue #8). The Accept header is
         // likewise set once, in the constructor - not here on every call (see its comment there).
         var orderUrl = $"{BaseUrl}/certs/v1/order/{orderId}";
-        var response = await SendAndLogAsync(() => _httpClient.GetAsync(orderUrl), "GET", orderUrl);
+        var response = await SendWithRetryAsync(() => _httpClient.GetAsync(orderUrl), "GET", orderUrl);
         var content = await response.Content.ReadAsStringAsync();
         if (!response.IsSuccessStatusCode) throw new Exception(BuildErrorString(content));
         return JsonConvert.DeserializeObject<OrderContent>(content);
@@ -1217,6 +1320,11 @@ public class MarkMonitorClient : IDisposable
                 JsonConvert.SerializeObject(request),
                 Encoding.UTF8, "application/json"
             );
+            // Deliberately SendAndLogAsync, NOT SendWithRetryAsync: a transport-level failure here
+            // means MarkMonitor may have already created the order before we found out - retrying
+            // this specific call would risk creating a second, real, billable order. That ambiguity
+            // is instead handled one level up, by EnrollCertificateAsync's dedup reservation staying
+            // active so a caller-level retry folds into this same attempt's result.
             var response = await SendAndLogAsync(() => _httpClient.PostAsync(url, jsonPayload), "POST", url);
             _logger.LogTrace("Response: {Response}", response);
 
@@ -1290,7 +1398,9 @@ public class MarkMonitorClient : IDisposable
             var url = $"{BaseUrl}/certs/v1/order/{orderId}/cancel";
             _logger.LogDebug("Cancelling certificate at {Url}", url);
             var payload = new StringContent("{}", Encoding.UTF8, "application/json");
-            var response = await SendAndLogAsync(() => _httpClient.PatchAsync(url, payload), "PATCH", url);
+            // Unlike order-create, retrying a cancel is safe - cancelling an already-cancelled order
+            // is a no-op, not a second billable resource.
+            var response = await SendWithRetryAsync(() => _httpClient.PatchAsync(url, payload), "PATCH", url);
 
             _logger.LogDebug("Reading response content");
             var content = await response.Content.ReadAsStringAsync();
@@ -1337,6 +1447,9 @@ public class MarkMonitorClient : IDisposable
                 Encoding.UTF8, "application/json"
             );
             _logger.LogTrace("Reissue payload: {@Payload}", jsonPayload);
+            // Deliberately not retried, same reasoning as CreateCertificateOrder's order-create POST:
+            // reissue produces a new certificate, so a transport-level failure here is ambiguous
+            // about whether MarkMonitor already reissued before we found out.
             var response = await SendAndLogAsync(() => _httpClient.PatchAsync(url, jsonPayload), "PATCH", url);
 
             _logger.LogDebug("Reading response content");
@@ -1389,7 +1502,9 @@ public class MarkMonitorClient : IDisposable
             var url = $"{BaseUrl}/certs/v1/order/{orderId}/revoke";
             _logger.LogDebug("Revoking certificate at {Url}", url);
             var payload = new StringContent("{}", Encoding.UTF8, "application/json");
-            var response = await SendAndLogAsync(() => _httpClient.PatchAsync(url, payload), "PATCH", url);
+            // Unlike order-create, retrying a revoke is safe - revoking an already-revoked order is
+            // a no-op, not a second billable resource.
+            var response = await SendWithRetryAsync(() => _httpClient.PatchAsync(url, payload), "PATCH", url);
 
             _logger.LogDebug("Reading response content");
             var content = await response.Content.ReadAsStringAsync();
@@ -1474,6 +1589,76 @@ public class MarkMonitorClient : IDisposable
                 stopwatch.ElapsedMilliseconds, e.Message);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Wraps <see cref="SendAndLogAsync"/> with up to <see cref="MaxRetryAttempts"/> attempts:
+    /// retries a network-level/timeout failure or an HTTP 5xx/429 response, with exponential
+    /// backoff (±25% jitter), honoring a 429 response's Retry-After header when present. Any other
+    /// 4xx is returned immediately without retrying - that's this component's own bad request, not
+    /// a transient failure retrying could fix. Must NOT be used for CreateCertificateOrder's
+    /// order-create POST (see this class's constant-level comment on why).
+    /// </summary>
+    private async Task<HttpResponseMessage> SendWithRetryAsync(Func<Task<HttpResponseMessage>> send, string method,
+        string url, CancellationToken cancelToken = default)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            HttpResponseMessage response;
+            try
+            {
+                response = await SendAndLogAsync(send, method, url);
+            }
+            catch (Exception e) when (e is HttpRequestException or TaskCanceledException &&
+                                       attempt < MaxRetryAttempts)
+            {
+                var delay = ComputeRetryDelay(attempt);
+                _logger.LogWarning(
+                    "{Method} {Url} failed on attempt {Attempt}/{MaxAttempts} ({EMessage}) - retrying in {DelayMs}ms",
+                    method, url, attempt, MaxRetryAttempts, e.Message, delay.TotalMilliseconds);
+                await _delay(delay, cancelToken);
+                continue;
+            }
+
+            if (response.IsSuccessStatusCode) return response;
+
+            var statusCode = (int)response.StatusCode;
+            var isRetryableStatus = statusCode == 429 || statusCode >= 500;
+            if (!isRetryableStatus || attempt >= MaxRetryAttempts) return response;
+
+            var retryDelay = statusCode == 429
+                ? GetRetryAfterDelay(response) ?? ComputeRetryDelay(attempt)
+                : ComputeRetryDelay(attempt);
+            _logger.LogWarning(
+                "{Method} {Url} returned {StatusCode} on attempt {Attempt}/{MaxAttempts} - retrying in {DelayMs}ms",
+                method, url, statusCode, attempt, MaxRetryAttempts, retryDelay.TotalMilliseconds);
+            // Deliberately not disposing the discarded response here - no other call site in this
+            // class disposes an HttpResponseMessage either (see e.g. AuthenticateAsync/
+            // ListOrganizationsAsync), so this stays consistent with that existing convention.
+            await _delay(retryDelay, cancelToken);
+        }
+    }
+
+    private TimeSpan ComputeRetryDelay(int attempt)
+    {
+        var exponential = RetryBaseDelay * Math.Pow(2, attempt - 1);
+        // ±25% jitter so multiple retrying callers don't all wake up and retry in lockstep.
+        var jitterFactor = 0.75 + _retryJitter.NextDouble() * 0.5;
+        return exponential * jitterFactor;
+    }
+
+    private TimeSpan? GetRetryAfterDelay(HttpResponseMessage response)
+    {
+        var retryAfter = response.Headers.RetryAfter;
+        if (retryAfter == null) return null;
+        if (retryAfter.Delta != null) return retryAfter.Delta;
+        if (retryAfter.Date != null)
+        {
+            var delta = retryAfter.Date.Value - _timeProvider.GetUtcNow();
+            return delta > TimeSpan.Zero ? delta : TimeSpan.Zero;
+        }
+
+        return null;
     }
 
     private static string BuildErrorString(string jsonString)

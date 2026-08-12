@@ -56,4 +56,38 @@ public class MarkMonitorConfig
     /// </summary>
     [JsonProperty(MarkMonitorCAPluginConfig.ConfigConstants.Enabled)]
     public bool Enabled { get; set; }
+
+    /// <summary>
+    /// The HTTP request timeout, in seconds, for calls to the MarkMonitor API. A property
+    /// initializer (not just the annotation's DefaultValue) is required here so an existing saved
+    /// CA connection - created before this field existed, and so missing it entirely from its
+    /// stored JSON - still gets a sane timeout rather than 0.
+    /// </summary>
+    [JsonProperty(MarkMonitorCAPluginConfig.ConfigConstants.TimeoutSeconds)]
+    public int TimeoutSeconds { get; set; } = 120;
+
+    private const int MinPageSize = 1;
+    private const int MaxPageSize = 500;
+    private int _pageSize = 100;
+
+    /// <summary>
+    /// The number of certificate orders requested per page during synchronization. Clamped to
+    /// [<see cref="MinPageSize"/>, <see cref="MaxPageSize"/>] in the setter, so both a
+    /// JSON-deserialized value and a directly-assigned one are always sane - not to be confused
+    /// with <c>MarkMonitorClient.NameResolutionPageSize</c>, an unrelated fixed page size used only
+    /// for org/group name lookups.
+    /// </summary>
+    [JsonProperty(MarkMonitorCAPluginConfig.ConfigConstants.PageSize)]
+    public int PageSize
+    {
+        get => _pageSize;
+        set => _pageSize = Math.Clamp(value, MinPageSize, MaxPageSize);
+    }
+
+    /// <summary>
+    /// When true, bypasses the skip-unchanged sync optimization and re-emits every order on every
+    /// synchronization, regardless of whether Command already has it at the same status.
+    /// </summary>
+    [JsonProperty(MarkMonitorCAPluginConfig.ConfigConstants.ForceCompleteSync)]
+    public bool ForceCompleteSync { get; set; }
 }

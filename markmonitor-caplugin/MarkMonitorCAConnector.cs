@@ -129,7 +129,11 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             _logger.LogDebug("CreateAndAuthenticateClientAsync completed");
 
             _logger.LogInformation("Attempting to synchronize certificates with MarkMonitor API");
-            var certificates = await client.GetCertificateInventoryAsync("", "", 100, blockingBuffer, cancelToken);
+            // Command's own fullSync flag forces a complete resync same as the ForceCompleteSync
+            // connection setting does - either one bypasses the skip-unchanged optimization.
+            var forceCompleteSync = fullSync || _config.ForceCompleteSync;
+            var certificates = await client.GetCertificateInventoryAsync("", "", _config.PageSize, blockingBuffer,
+                cancelToken, _certificateDataReader, forceCompleteSync);
             _logger.LogDebug("Synchronized {Certificates} certificates", certificates);
 
             // Check for cancellation after operation
@@ -477,7 +481,8 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
                         _config.ApiKey,
                         _config.ApiUsername,
                         _config.ApiPassword,
-                        true
+                        true,
+                        timeoutSeconds: _config.TimeoutSeconds
                     );
             }
             finally

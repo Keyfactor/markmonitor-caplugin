@@ -6,11 +6,14 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- The MarkMonitor client now retries idempotent GETs, authentication, and cancel/revoke calls up to
-  3 times on a network failure/timeout or an HTTP 5xx/429 response, with jittered exponential
-  backoff (honoring `Retry-After` on 429). The order-create POST and reissue PATCH are deliberately
-  excluded - retrying either risks creating a duplicate, billable MarkMonitor resource on an
-  ambiguous failure.
+- The MarkMonitor client now retries idempotent GETs and cancel/revoke calls up to 3 times on a
+  network failure/timeout or an HTTP 5xx/429 response, with jittered exponential backoff (honoring
+  `Retry-After` on 429, itself capped at 120s so a misbehaving/compromised endpoint can't dictate an
+  arbitrarily long wait). The order-create POST, the reissue PATCH, and authentication are
+  deliberately excluded: the first two risk creating a duplicate, billable MarkMonitor resource on
+  an ambiguous failure, and authentication runs inside the client's shared auth lock - retrying
+  there would multiply how long every other concurrent operation on the same cached client is
+  blocked during a MarkMonitor outage, not just the one call that's degraded.
 - A new `TimeoutSeconds` CA connection field (default 120, clamped to 1-120 - never higher than this
   field's own pre-existing hardcoded default, so a misconfigured value can't make a slow-MarkMonitor
   scenario worse than before this field existed) sets the HTTP request timeout for calls to the
@@ -33,8 +36,10 @@ All notable changes to this project will be documented in this file.
   connection fields, defaults 5/10s, clamped to 0-20 / 0-60s) instead of always returning it in
   MarkMonitor's initial pending state - a product whose DCV/approval resolves quickly can now come
   back from the enroll call already issued rather than only picking up the certificate on the next
-  sync. Polling happens inside the enrollment dedup reservation, so a concurrent duplicate request
-  folded into it gets the polled result too. `PickupRetries=0` restores the original always-pending
+  sync. Each poll is a single HTTP attempt (not itself retried), so the real worst case stays close
+  to `PickupRetries * (PickupDelaySeconds + TimeoutSeconds)` rather than being multiplied further.
+  Polling happens inside the enrollment dedup reservation, so a concurrent duplicate request folded
+  into it gets the polled result too. `PickupRetries=0` restores the original always-pending
   behavior.
 
 ### Fixed
@@ -43,15 +48,22 @@ All notable changes to this project will be documented in this file.
   organization) after its existing field checks pass, using a transient client built from exactly
   the credentials being saved - a wrong API key or password is now caught at connector-save time
   instead of surfacing only on the first real enroll/revoke/sync. Failures are summarized
-  ("authentication failed" / "listing organizations failed") rather than forwarding the raw HTTP
-  response. `ValidateProductInfo` now also rejects a `ProductID` that doesn't parse to a
-  `CertOrderTypes` member, listing the valid values.
+  ("authentication failed" / "listing organizations failed" / "could not be parsed") rather than
+  forwarding the raw HTTP response or a raw deserialization exception. Skipped entirely when the
+  connector is saved with `Enabled=false`, preserving that field's own documented purpose (letting
+  an admin create the CA connector before real credentials are available). `ValidateProductInfo`
+  (and `Enroll` itself) now also reject a `ProductID` that doesn't resolve to an actually-defined
+  `CertOrderTypes` member - `Enum.TryParse`/`Enum.Parse` alone silently "succeed" for any numeric
+  string that merely fits the underlying type, listing the valid values instead.
 - Multi-SAN enrollments now issue with every requested DNS SAN instead of just the CN - `Enroll`'s
-  `san` dictionary (and any SAN extension embedded directly in the submitted CSR) is now wired into
-  the MarkMonitor order's `dnsNames` field. MarkMonitor issues CN ∪ `dnsNames` and does not honor a
-  CSR's own SAN extension as authoritative, so previously a multi-SAN request silently issued
-  CN-only. Non-DNS SAN types (IP/email/URI) have no field in MarkMonitor's order schema and are
-  dropped with a logged warning rather than failing the enrollment.
+  `san` dictionary is now wired into the MarkMonitor order's `dnsNames` field. MarkMonitor issues
+  CN ∪ `dnsNames` and does not honor a CSR's own SAN extension as authoritative, so previously a
+  multi-SAN request silently issued CN-only. A CSR's own embedded SAN extension is used only as a
+  fallback when `san` is `null` (Command never populated SAN data for this request at all) - never
+  when `san` is present, even empty, since that means Command's own enrollment pattern/template ran
+  and is authoritative; a subscriber-generated CSR must not be able to add domains beyond what that
+  pattern actually authorized. Non-DNS SAN types (IP/email/URI) have no field in MarkMonitor's order
+  schema and are dropped with a logged warning rather than failing the enrollment.
 
 ### Breaking Changes
 
@@ -59,17 +71,34 @@ All notable changes to this project will be documented in this file.
   parameters. They were surfaced in Command's UI but never actually read anywhere - MarkMonitor's
   API has no field to wire them up to - so setting them silently did nothing. If a template
   referenced these parameters, remove them; they have no effect and are no longer offered.
-- **`Enroll` now takes up to ~50 seconds longer by default** on an upgrade that doesn't touch its
-  saved CA connection config: the new `PickupRetries`/`PickupDelaySeconds` fields default to 5/10s
-  (see "Added" above), and MarkMonitor never issues synchronously from order creation, so a typical
-  enrollment now spends that time polling before returning. Set `PickupRetries=0` to restore the
-  prior near-instant-return (always-pending) behavior if this trips a tuned request timeout in
-  front of the gateway or in a bulk-enrollment pipeline.
-- **Saving a CA connection now requires live MarkMonitor connectivity**, even for a save that only
-  changes an unrelated field (Command always resubmits the full connection config, not a diff) - see
-  `ValidateCAConnectionInfo` under "Fixed" above. A connection whose credentials have since been
-  invalidated at MarkMonitor, or that's saved during a MarkMonitor outage longer than the client's
-  3-attempt retry budget, can no longer be re-saved until connectivity is restored.
+- **`Enroll` now takes longer by default** on an upgrade that doesn't touch its saved CA connection
+  config: the new `PickupRetries`/`PickupDelaySeconds` fields default to 5/10s (see "Added" above),
+  and MarkMonitor never issues synchronously from order creation, so a typical enrollment now spends
+  that time polling before returning - up to `PickupRetries * (PickupDelaySeconds + TimeoutSeconds)`
+  in the worst case if MarkMonitor is slow to respond rather than erroring (roughly 11 minutes at
+  the shipped defaults, not just `PickupRetries * PickupDelaySeconds` ≈ 50s - size any upstream
+  timeout off the real worst case, not the nominal one). Set `PickupRetries=0` to restore the prior
+  near-instant-return (always-pending) behavior if this trips a tuned request timeout in front of
+  the gateway or in a bulk-enrollment pipeline.
+- **Saving a CA connection now requires live MarkMonitor connectivity** when the connector is
+  enabled, even for a save that only changes an unrelated field (Command always resubmits the full
+  connection config, not a diff) - see `ValidateCAConnectionInfo` under "Fixed" above. A connection
+  whose credentials have since been invalidated at MarkMonitor, or that's saved during a MarkMonitor
+  outage longer than the client's own retry budget, can no longer be re-saved until connectivity is
+  restored. Save with `Enabled=false` to bypass this (and skip validation entirely), matching that
+  field's pre-existing documented purpose.
+- **Any operation retried by the client (GETs, cancel/revoke) can now take up to ~3x longer** than
+  before this PR when MarkMonitor is slow to respond rather than erroring outright, bounded by the
+  now-configurable `TimeoutSeconds` (max 120s per attempt, 3 attempts) - a caller whose own timeout
+  was tuned around the prior single-attempt, unconfigured ~100s .NET default should re-check it.
+  Authentication itself is not retried (see "Added" above), so this does not compound through the
+  shared auth lock.
+- **`RenewOrReissue` no longer unconditionally revokes the certificate it's replacing** - see the
+  new `RenewalWindowDays` template parameter above. An existing template with no `RenewalWindowDays`
+  set (the common case on upgrade) now leaves a proactively-renewed certificate with more than 90
+  days of remaining validity unrevoked, where every prior version always revoked it once the
+  replacement issued. Set `RenewalWindowDays` higher than your renewal lead time to restore the
+  prior always-revoke behavior.
 
 ### Fixed
 

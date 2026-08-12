@@ -39,6 +39,12 @@ public class MarkMonitorClient : IDisposable
     private const int MaxRetryAttempts = 3;
     private static readonly TimeSpan RetryBaseDelay = TimeSpan.FromSeconds(1);
 
+    // A 429 response's Retry-After is server-controlled input - never trusted beyond this ceiling.
+    // Uncapped, a single misbehaving/compromised endpoint could dictate how long this process waits
+    // with no way to interrupt it (SendWithRetryAsync's delay call isn't cancellable on every path,
+    // e.g. AuthenticateAsync's, which additionally runs inside the shared _authLock).
+    private const int MaxRetryAfterSeconds = 120;
+
     // Guards against creating a duplicate MarkMonitor order when Command retries an Enroll call -
     // whether the first attempt is still in flight (the retry races it) or already finished but its
     // response was lost (timeout, dropped connection, etc). Keyed on org+product+subject+CSR - an
@@ -197,7 +203,14 @@ public class MarkMonitorClient : IDisposable
                 _username);
 
             _logger.LogDebug("Sending authentication request");
-            var response = await SendWithRetryAsync(() => _httpClient.PostAsync(requestUrl,
+            // Deliberately SendAndLogAsync, NOT SendWithRetryAsync: this whole method runs inside
+            // EnsureAuthenticatedAsync's _authLock, held by every other concurrent Enroll/Revoke/Sync
+            // call on this cached client that also needs a token. Retrying here would multiply the
+            // worst-case lock-hold time (up to 3x a full HTTP timeout, plus backoff) for everyone
+            // queued behind it, during exactly the "MarkMonitor is degraded" scenario where fast
+            // failure matters most - a caller-level retry (Command retrying the whole operation) is
+            // the right layer for a transient auth failure, not a retry loop inside the lock.
+            var response = await SendAndLogAsync(() => _httpClient.PostAsync(requestUrl,
                 new StringContent(JsonConvert.SerializeObject(requestBody), Encoding.UTF8, "application/json")),
                 "POST", requestUrl);
 
@@ -657,8 +670,13 @@ public class MarkMonitorClient : IDisposable
 
     /// <summary>Fetches the raw order content for a single order ID (used both to build the
     /// public-facing AnyCAPluginCertificate and, internally, to verify an order's owning
-    /// organization before revoking or cancelling it).</summary>
-    private async Task<OrderContent> FetchOrderAsync(string orderId)
+    /// organization before revoking or cancelling it). <paramref name="allowRetry"/> is false only
+    /// for PollForIssuanceAsync's own per-attempt fetch - that loop is already its own outer retry
+    /// mechanism (a failed attempt just logs and moves to the next poll), so an inner
+    /// SendWithRetryAsync there would multiply a single hung/slow poll attempt by up to 3x the
+    /// configured timeout, blowing well past the "bounded by PickupRetries/PickupDelaySeconds"
+    /// latency ceiling PollForIssuanceAsync's own callers document.</summary>
+    private async Task<OrderContent> FetchOrderAsync(string orderId, bool allowRetry = true)
     {
         ValidateGuidFormat(orderId, nameof(orderId), "MarkMonitor order ID");
         await EnsureAuthenticatedAsync();
@@ -670,7 +688,9 @@ public class MarkMonitorClient : IDisposable
         // the shared HttpClient's Authorization header (see GitHub issue #8). The Accept header is
         // likewise set once, in the constructor - not here on every call (see its comment there).
         var orderUrl = $"{BaseUrl}/certs/v1/order/{orderId}";
-        var response = await SendWithRetryAsync(() => _httpClient.GetAsync(orderUrl), "GET", orderUrl);
+        var response = allowRetry
+            ? await SendWithRetryAsync(() => _httpClient.GetAsync(orderUrl), "GET", orderUrl)
+            : await SendAndLogAsync(() => _httpClient.GetAsync(orderUrl), "GET", orderUrl);
         var content = await response.Content.ReadAsStringAsync();
         if (!response.IsSuccessStatusCode) throw new Exception(BuildErrorString(content));
         return JsonConvert.DeserializeObject<OrderContent>(content);
@@ -685,7 +705,10 @@ public class MarkMonitorClient : IDisposable
     /// certificate directly instead of always making Command wait for the next sync. Falls back to
     /// returning <paramref name="order"/> unchanged - today's existing behavior - if
     /// <c>PickupRetries</c> is 0, the order already reached a terminal state, or the budget is
-    /// exhausted before issuance.
+    /// exhausted before issuance. Each poll's own fetch is deliberately single-attempt (see
+    /// <see cref="FetchOrderAsync"/>'s <c>allowRetry</c> parameter) so this loop's real worst-case
+    /// wall-clock time stays close to <c>PickupRetries * (PickupDelaySeconds + TimeoutSeconds)</c>
+    /// rather than being multiplied further by an inner retry cascade on top of this outer one.
     /// </summary>
     private async Task<OrderContent> PollForIssuanceAsync(OrderContent order, MarkMonitorConfig config)
     {
@@ -699,7 +722,7 @@ public class MarkMonitorClient : IDisposable
             OrderContent polled;
             try
             {
-                polled = await FetchOrderAsync(order.Id);
+                polled = await FetchOrderAsync(order.Id, allowRetry: false);
             }
             catch (Exception e)
             {
@@ -1035,9 +1058,16 @@ public class MarkMonitorClient : IDisposable
                 MarkMonitorCAPluginConfig.EnrollmentConfigConstants.DCVMethod,
                 DomainControlValidationMethods.Email.GetDescription()));
 
-            // Lookup order type in CertOrderTypes enum
+            // Lookup order type in CertOrderTypes enum. Enum.Parse alone would silently "succeed" for
+            // any numeric string that fits the underlying int type even with no member actually
+            // defined for that value (e.g. "20" for a 12-member enum) - Enum.IsDefined enforces
+            // membership, matching the same check ValidateProductInfo already applies at template-save
+            // time (this is the same gap, at the point it would otherwise be discovered).
             _logger.LogDebug("Looking up order type {OrderType} in CertOrderTypes enum", orderType);
             var certOrderType = Enum.Parse<CertOrderTypes>(orderType);
+            if (!Enum.IsDefined(typeof(CertOrderTypes), certOrderType))
+                throw new ArgumentException(
+                    $"'{LogSanitizer.ForLog(orderType)}' is not a valid MarkMonitor product ID");
 
             _logger.LogDebug("Deserializing CSR");
             var csrObject = new Pkcs10CertificationRequest(GetCsrBytes(csr));
@@ -1271,8 +1301,15 @@ public class MarkMonitorClient : IDisposable
     /// list - real captured orders (and DigiCert's own docs, MarkMonitor's sole provider) show the
     /// issued SANs are the union of the order's <c>commonName</c> and its own <c>dnsNames</c> field.
     /// A CSR's SAN extension is ignored server-side unless those same names are also placed in
-    /// <c>dnsNames</c> here - so both the Command-supplied <paramref name="san"/> dictionary and any
-    /// SAN extension embedded in <paramref name="csrObject"/> itself are unioned into one list.
+    /// <c>dnsNames</c> here - so the Command-supplied <paramref name="san"/> dictionary is the
+    /// primary source. A SAN extension embedded in <paramref name="csrObject"/> itself is used only
+    /// as a fallback when <paramref name="san"/> is <c>null</c> - Command never populated SAN data
+    /// at all for this request - and never when it's non-null, even empty: a non-null dictionary
+    /// means Command's own enrollment pattern/template ran and is the authoritative source for this
+    /// request, and a raw CSR-embedded SAN extension (subscriber-generated, outside Command's own
+    /// policy/RA control) must not override or supplement it. certinext-caplugin's own history has
+    /// the identical unconditional-union pattern deliberately reverted for this exact reason - a
+    /// subscriber's own CSR can carry more names than an enrollment pattern actually authorized.
     /// Non-DNS SAN types (IP/email/URI) have no field in MarkMonitor's order schema and are dropped
     /// with a logged warning rather than failing the enrollment.
     /// </summary>
@@ -1280,9 +1317,10 @@ public class MarkMonitorClient : IDisposable
         Dictionary<string, string[]> san)
     {
         var dnsNames = new List<string>();
-        var droppedTypes = new List<string>();
 
         if (san != null)
+        {
+            var droppedTypes = new List<string>();
             foreach (var entry in san)
             {
                 if (entry.Value == null) continue;
@@ -1297,19 +1335,22 @@ public class MarkMonitorClient : IDisposable
                     droppedTypes.Add(entry.Key);
             }
 
-        if (droppedTypes.Count > 0)
-            _logger.LogWarning(
-                "MarkMonitor's order schema has no field for non-DNS SAN type(s) {DroppedSanTypes} - they were requested but will not be included on this order",
-                LogSanitizer.ForLog(string.Join(", ", droppedTypes)));
-
-        var requestedExtensions = csrObject.GetRequestedExtensions();
-        var sanExtension = requestedExtensions?.GetExtension(X509Extensions.SubjectAlternativeName);
-        if (sanExtension != null)
+            if (droppedTypes.Count > 0)
+                _logger.LogWarning(
+                    "MarkMonitor's order schema has no field for non-DNS SAN type(s) {DroppedSanTypes} - they were requested but will not be included on this order",
+                    LogSanitizer.ForLog(string.Join(", ", droppedTypes)));
+        }
+        else
         {
-            var generalNames = GeneralNames.GetInstance(sanExtension.GetParsedValue());
-            dnsNames.AddRange(generalNames.GetNames()
-                .Where(name => name.TagNo == GeneralName.DnsName)
-                .Select(name => name.Name.ToString()));
+            var requestedExtensions = csrObject.GetRequestedExtensions();
+            var sanExtension = requestedExtensions?.GetExtension(X509Extensions.SubjectAlternativeName);
+            if (sanExtension != null)
+            {
+                var generalNames = GeneralNames.GetInstance(sanExtension.GetParsedValue());
+                dnsNames.AddRange(generalNames.GetNames()
+                    .Where(name => name.TagNo == GeneralName.DnsName)
+                    .Select(name => name.Name.ToString()));
+            }
         }
 
         // The CN is submitted separately as Cert.CommonName, and MarkMonitor issues CN ∪ dnsNames -
@@ -1723,14 +1764,17 @@ public class MarkMonitorClient : IDisposable
     {
         var retryAfter = response.Headers.RetryAfter;
         if (retryAfter == null) return null;
-        if (retryAfter.Delta != null) return retryAfter.Delta;
-        if (retryAfter.Date != null)
+
+        TimeSpan? delay = null;
+        if (retryAfter.Delta != null) delay = retryAfter.Delta;
+        else if (retryAfter.Date != null)
         {
             var delta = retryAfter.Date.Value - _timeProvider.GetUtcNow();
-            return delta > TimeSpan.Zero ? delta : TimeSpan.Zero;
+            delay = delta > TimeSpan.Zero ? delta : TimeSpan.Zero;
         }
 
-        return null;
+        if (delay == null) return null;
+        return TimeSpan.FromSeconds(Math.Min(delay.Value.TotalSeconds, MaxRetryAfterSeconds));
     }
 
     private static string BuildErrorString(string jsonString)

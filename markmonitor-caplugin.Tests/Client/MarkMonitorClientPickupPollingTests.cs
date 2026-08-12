@@ -163,4 +163,39 @@ public class MarkMonitorClientPickupPollingTests
         Assert.Equal((int)EndEntityStatus.GENERATED, result.Status);
         Assert.Equal(0, OrderFetchCount(handler));
     }
+
+    [Fact]
+    public async Task EnrollCertificateAsync_WhenAPollAttemptFailsRepeatedly_EachOuterPollIsASingleHttpAttempt()
+    {
+        // Regression test: each poll's own order-fetch used to go through SendWithRetryAsync (up to
+        // 3 attempts per poll), multiplying a single hung/slow poll far past the documented
+        // PickupRetries*PickupDelaySeconds latency ceiling. It's now a single-attempt fetch, so a
+        // failure is retried only by the OUTER polling loop (one more poll delay + attempt), not
+        // absorbed 3-at-a-time inside a single outer attempt.
+        var pollDelayCount = 0;
+        var handler = BuildHandlerWithOrgAndCreate()
+            .WhenAsync(req => FakeHttpMessageHandler.Is(req, "GET", $"/certs/v1/order/{OrderId}"),
+                _ => Task.FromException<HttpResponseMessage>(new HttpRequestException("Simulated connection reset")),
+                _ => Task.FromException<HttpResponseMessage>(new HttpRequestException("Simulated connection reset")),
+                _ => Task.FromException<HttpResponseMessage>(new HttpRequestException("Simulated connection reset")),
+                _ => Task.FromResult(FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrders.OrderWithCert(OrderId, "DIGI_ISSUED"))));
+        var client = handler.BuildClient(delay: (_, _) =>
+        {
+            pollDelayCount++;
+            return Task.CompletedTask;
+        });
+        await client.AuthenticateAsync();
+
+        var result = await client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>(), "SslDvGeotrust", new Dictionary<string, string>(),
+            Config(pickupRetries: 5));
+
+        Assert.Equal((int)EndEntityStatus.GENERATED, result.Status);
+        // 4 outer poll attempts (3 failures + 1 success), each a single HTTP request - if a poll
+        // attempt still retried internally, the 3 failures would be absorbed within one outer
+        // attempt (SendWithRetryAsync's own MaxRetryAttempts=3), needing only 2 outer attempts.
+        Assert.Equal(4, pollDelayCount);
+        Assert.Equal(4, OrderFetchCount(handler));
+    }
 }

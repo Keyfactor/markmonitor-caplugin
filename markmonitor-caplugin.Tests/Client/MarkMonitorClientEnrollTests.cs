@@ -130,4 +130,26 @@ public class MarkMonitorClientEnrollTests
         Assert.NotNull(result);
         Assert.Contains(handler.Requests, req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"));
     }
+
+    [Fact]
+    public async Task EnrollCertificateAsync_WithANumericOrderTypeForAnUndefinedEnumValue_ThrowsWithoutSubmittingTheOrder()
+    {
+        // Regression test: Enum.Parse<CertOrderTypes> alone "succeeds" for any numeric string that
+        // fits the underlying int type, even with no member defined for that value (CertOrderTypes
+        // has 12 members, values 0-11) - Enum.IsDefined is the check that actually enforces membership.
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())));
+        var client = handler.BuildClient();
+        await client.AuthenticateAsync();
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+            client.EnrollCertificateAsync(SampleCsr.Pem, "CN=test.mmcertdomain.com",
+                new Dictionary<string, string[]>(), "20", new Dictionary<string, string>(), Config()));
+
+        Assert.Contains("20", ex.Message);
+        Assert.DoesNotContain(handler.Requests, req => FakeHttpMessageHandler.Is(req, "POST", "/certs/v1/order"));
+    }
 }

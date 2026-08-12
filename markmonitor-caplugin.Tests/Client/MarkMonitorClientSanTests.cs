@@ -24,7 +24,7 @@ public class MarkMonitorClientSanTests
                 FakeHttpMessageHandler.Json(HttpStatusCode.Accepted, SampleOrders.OrderWithCert(orderId, "CREATED")));
 
     private static async Task<JObject> EnrollAndGetSentBody(string csrPem, string subject,
-        Dictionary<string, string[]> san, FakeHttpMessageHandler? handler = null)
+        Dictionary<string, string[]>? san, FakeHttpMessageHandler? handler = null)
     {
         handler ??= BuildHandler();
         var client = handler.BuildClient();
@@ -104,40 +104,57 @@ public class MarkMonitorClientSanTests
     }
 
     [Fact]
-    public async Task EnrollCertificateAsync_WithSansOnlyEmbeddedInTheCsr_UnionsThemIntoDnsNames()
+    public async Task EnrollCertificateAsync_WithSansOnlyEmbeddedInTheCsrAndNoSanDictionaryAtAll_UnionsThemIntoDnsNames()
     {
+        // `san` is genuinely null here - Command never populated SAN data at all for this request -
+        // which is the only condition that falls back to the CSR's own SAN extension.
         var csrPem = SampleCsrWithSans.GeneratePem("test.mmcertdomain.com", "csr-san.mmcertdomain.com");
 
-        var body = await EnrollAndGetSentBody(csrPem, "CN=test.mmcertdomain.com",
-            new Dictionary<string, string[]>());
+        var body = await EnrollAndGetSentBody(csrPem, "CN=test.mmcertdomain.com", null);
 
         Assert.Equal(["csr-san.mmcertdomain.com"], DnsNamesOf(body));
     }
 
     [Fact]
-    public async Task EnrollCertificateAsync_WithSansInBothTheDictionaryAndTheCsr_UnionsAndDedupesThem()
+    public async Task EnrollCertificateAsync_WithSansInBothTheDictionaryAndTheCsr_UsesOnlyTheDictionaryAndIgnoresTheCsr()
     {
-        var csrPem = SampleCsrWithSans.GeneratePem("test.mmcertdomain.com", "csr-san.mmcertdomain.com",
+        // Regression test for a security concern raised in review: a non-null `san` dictionary -
+        // even one that omits a domain the CSR itself carries - means Command's own enrollment
+        // pattern/template ran and is authoritative for this request. The CSR is subscriber-generated
+        // and outside Command's policy/RA control, so its own SAN extension must never be unioned in
+        // (let alone let through unauthorized domains) once Command has supplied a real dictionary -
+        // certinext-caplugin reverted the identical unconditional-union pattern for this exact reason.
+        var csrPem = SampleCsrWithSans.GeneratePem("test.mmcertdomain.com", "csr-only.mmcertdomain.com",
             "shared.mmcertdomain.com");
         var san = new Dictionary<string, string[]> { ["Dns"] = ["dict-san.mmcertdomain.com", "shared.mmcertdomain.com"] };
 
         var body = await EnrollAndGetSentBody(csrPem, "CN=test.mmcertdomain.com", san);
 
-        Assert.Equal(
-            new HashSet<string>
-                { "csr-san.mmcertdomain.com", "shared.mmcertdomain.com", "dict-san.mmcertdomain.com" },
+        Assert.Equal(new HashSet<string> { "dict-san.mmcertdomain.com", "shared.mmcertdomain.com" },
             DnsNamesOf(body)!.ToHashSet());
-        Assert.Equal(3, DnsNamesOf(body)!.Count);
+        Assert.DoesNotContain("csr-only.mmcertdomain.com", DnsNamesOf(body)!);
     }
 
     [Fact]
-    public async Task EnrollCertificateAsync_WithCsrSanMatchingTheCn_ExcludesItFromDnsNames()
+    public async Task EnrollCertificateAsync_WithANonNullEmptySanDictionaryAndCsrSans_IgnoresTheCsrSans()
+    {
+        // An empty-but-non-null dictionary means Command's enrollment pattern deliberately produced
+        // no SANs for this request - that must be respected, not silently overridden by the CSR.
+        var csrPem = SampleCsrWithSans.GeneratePem("test.mmcertdomain.com", "csr-san.mmcertdomain.com");
+
+        var body = await EnrollAndGetSentBody(csrPem, "CN=test.mmcertdomain.com",
+            new Dictionary<string, string[]>());
+
+        Assert.Null(body["cert"]!["dnsNames"]);
+    }
+
+    [Fact]
+    public async Task EnrollCertificateAsync_WithCsrSanMatchingTheCnAndNoSanDictionary_ExcludesItFromDnsNames()
     {
         var csrPem = SampleCsrWithSans.GeneratePem("test.mmcertdomain.com", "test.mmcertdomain.com",
             "extra.mmcertdomain.com");
 
-        var body = await EnrollAndGetSentBody(csrPem, "CN=test.mmcertdomain.com",
-            new Dictionary<string, string[]>());
+        var body = await EnrollAndGetSentBody(csrPem, "CN=test.mmcertdomain.com", null);
 
         Assert.Equal(["extra.mmcertdomain.com"], DnsNamesOf(body));
     }

@@ -439,6 +439,23 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         _logger.LogTrace("MarkMonitor Organization Name: {OrgName}", orgName);
         if (errors.Any()) ThrowValidationException(errors);
 
+        // Enabled's own documented purpose (GetPluginAnnotations' Comments) is letting an admin
+        // create the CA connector before real MarkMonitor credentials are available - a workflow the
+        // field-presence/format checks above already accommodate (they only require *some*
+        // syntactically-valid values, not working ones). The live-connectivity check below must not
+        // undermine that pre-existing capability by requiring real connectivity even for a
+        // deliberately-disabled, not-yet-configured connector.
+        var enabled = !connectionInfo.TryGetValue(MarkMonitorConstants.ConfigConstants.Enabled, out var aEnabled) ||
+                      aEnabled is not bool enabledFlag || enabledFlag;
+        if (!enabled)
+        {
+            _logger.LogInformation(
+                "CA connector is disabled - skipping the live MarkMonitor connectivity check");
+            _logger.LogInformation("CA Connection Info validated successfully");
+            _logger.MethodExit();
+            return;
+        }
+
         // The aggregated checks above only confirm the fields are present and well-formed - not that
         // they're actually valid MarkMonitor credentials. Build a transient client from the submitted
         // connectionInfo itself (never _cachedClient, which may hold stale/different creds from a
@@ -452,10 +469,25 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         {
             if (!_markMonitorClientWasInjected)
             {
-                var rawConfig = JsonConvert.SerializeObject(connectionInfo);
-                tempConfig = JsonConvert.DeserializeObject<MarkMonitorConfig>(rawConfig);
-                tempConfig.BaseUrl = baseURL; // the resolved effective value (blank -> the default above)
-                tempClient = BuildClient(tempConfig);
+                try
+                {
+                    var rawConfig = JsonConvert.SerializeObject(connectionInfo);
+                    tempConfig = JsonConvert.DeserializeObject<MarkMonitorConfig>(rawConfig);
+                    tempConfig.BaseUrl = baseURL; // the resolved effective value (blank -> the default above)
+                    tempClient = BuildClient(tempConfig);
+                }
+                catch (Exception e)
+                {
+                    // A field the aggregated checks above don't cover (e.g. a non-numeric value for
+                    // one of the Number-typed fields) can fail deserialization here - caught and
+                    // sanitized like every other failure mode in this method, rather than letting a
+                    // raw JsonSerializationException (which can embed field paths/values) escape
+                    // unlogged.
+                    _logger.LogError("CA connection validation failed while parsing the submitted configuration: {EMessage}",
+                        e.Message);
+                    throw new AnyCAValidationException(
+                        "The submitted configuration could not be parsed. See gateway logs for details.");
+                }
             }
 
             try
@@ -517,7 +549,11 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
 
         // Unlike MarkmonitorContact/MarkmonitorGroup above, this is a cheap static check - no live
         // MarkMonitor call - so there's no tradeoff in failing fast on it at template-save time.
-        if (!Enum.TryParse<CertOrderTypes>(productInfo.ProductID, out _))
+        // Enum.TryParse alone isn't enough: it happily "succeeds" for any numeric string that fits
+        // the underlying int type even when no member is actually defined for that value (e.g. "20"
+        // for a 12-member enum) - Enum.IsDefined is the check that actually enforces membership.
+        if (!Enum.TryParse<CertOrderTypes>(productInfo.ProductID, out var parsedProductId) ||
+            !Enum.IsDefined(typeof(CertOrderTypes), parsedProductId))
             throw new AnyCAValidationException(
                 $"'{LogSanitizer.ForLog(productInfo.ProductID)}' is not a valid MarkMonitor product ID. Valid values are: {string.Join(", ", Enum.GetNames(typeof(CertOrderTypes)))}");
 

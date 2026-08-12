@@ -244,7 +244,10 @@ Domain Control Validation (and, in some environments, manual approval) is requir
 product whose DCV/approval resolves quickly, the plugin polls the order for up to `PickupRetries`
 attempts (every `PickupDelaySeconds`) before returning, so Command can get the issued certificate
 back from the enroll call itself rather than always waiting for the next sync; `PickupRetries=0`
-disables this and restores the original always-returns-pending behavior.
+disables this and restores the original always-returns-pending behavior. Each poll is a single
+attempt, but if MarkMonitor is slow to respond (rather than erroring) it can still take up to
+`TimeoutSeconds` per attempt - size any upstream timeout around `PickupRetries * (PickupDelaySeconds
++ TimeoutSeconds)`, the real worst case, not just `PickupRetries * PickupDelaySeconds`.
 
 ```mermaid
 sequenceDiagram
@@ -331,19 +334,24 @@ flowchart TD
     C -- Not https --> E
     C -- OK --> D{"Organization present?"}
     D -- Missing --> E
-    D -- Present --> G{"Authenticate with the<br/>submitted credentials"}
+    D -- Present --> N{"Enabled?"}
+    N -- No --> F([Connector saved])
+    N -- Yes --> G{"Authenticate with the<br/>submitted credentials"}
     G -- Fails --> E
     G -- Succeeds --> H{"At least one organization<br/>visible?"}
     H -- No / fails --> E
-    H -- Yes --> F([Connector saved])
+    H -- Yes --> F
 ```
 
-After the field checks above pass, the plugin also places a live call to MarkMonitor: it
-authenticates with the submitted (not yet saved) credentials and confirms at least one organization
-is visible, using a transient client built from exactly what's about to be saved — never the
-connector's already-cached client, which could be validating stale credentials. A failure at either
-step is summarized ("authentication failed" / "listing organizations failed") rather than forwarding
-the raw HTTP response, which could otherwise leak transport-layer detail to the UI.
+After the field checks above pass - and only if the connector is being saved enabled - the plugin
+also places a live call to MarkMonitor: it authenticates with the submitted (not yet saved)
+credentials and confirms at least one organization is visible, using a transient client built from
+exactly what's about to be saved — never the connector's already-cached client, which could be
+validating stale credentials. Saving with `Enabled` set to `false` skips this live check entirely,
+preserving that field's own documented purpose: creating the connector before real credentials are
+available. A failure at any step (parsing the submitted configuration, authenticating, or listing
+organizations) is summarized rather than forwarding the raw HTTP response or exception detail, which
+could otherwise leak transport-layer detail to the UI.
 
 ### Order Status Mapping
 

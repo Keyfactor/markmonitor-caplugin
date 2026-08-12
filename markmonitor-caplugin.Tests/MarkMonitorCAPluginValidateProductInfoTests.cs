@@ -38,4 +38,20 @@ public class MarkMonitorCAPluginValidateProductInfoTests
         await Assert.ThrowsAsync<AnyCAValidationException>(() =>
             plugin.ValidateProductInfo(productInfo, new Dictionary<string, object>()));
     }
+
+    [Fact]
+    public async Task ValidateProductInfo_WithANumericStringForAnUndefinedEnumValue_Throws()
+    {
+        // Regression test: Enum.TryParse<CertOrderTypes> alone "succeeds" for any numeric string
+        // that fits the underlying int type, even with no member defined for that value (CertOrderTypes
+        // has 12 members, values 0-11) - Enum.IsDefined is the check that actually enforces membership.
+        var plugin = new MarkMonitorCAPlugin();
+        var productInfo = new EnrollmentProductInfo { ProductID = "20" };
+
+        var ex = await Assert.ThrowsAsync<AnyCAValidationException>(() =>
+            plugin.ValidateProductInfo(productInfo, new Dictionary<string, object>()));
+
+        Assert.Contains("20", ex.Message);
+        Assert.Contains("SslDvGeotrust", ex.Message);
+    }
 }

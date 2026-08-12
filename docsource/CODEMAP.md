@@ -39,7 +39,7 @@ MarkMonitor's SSL API is backed by **DigiCert** (the only `provider` it supports
 | File | Responsibility |
 |---|---|
 | `MarkMonitorCAConnector.cs` | `IAnyCAPlugin` entry point. Methods the Gateway host calls: `Initialize`, `Enroll`, `Revoke`, `Synchronize`, `GetSingleRecord`, `Ping`, `ValidateCAConnectionInfo` (field checks, then a live auth + org-list call via a transient client - never `_cachedClient`), `ValidateProductInfo` (cheap static `ProductID` enum check only - contact/group stay a no-op), `GetProductIds`, `GetCAConnectorAnnotations` / `GetTemplateParameterAnnotations`. `BuildClient(MarkMonitorConfig)` is the one place the client-construction argument list lives, shared by the cached-client path and `ValidateCAConnectionInfo`'s transient one. Holds the deserialized config and one lazily-built, cached `MarkMonitorClient` (`CreateAndAuthenticateClientAsync`). Contains the `RenewOrReissue` → revoke-prior logic (`ParseRenewalWindowDays` logs a warning, not a silent fallback, when the template param is present but invalid) and the `EnsureOrgNameConfigured` guard. |
-| `Client/MarkMonitorClient.cs` | The MarkMonitor REST HTTP client. Owns: bearer-token auth (`X-API-KEY` header + username/password → token, cached with 30s early-expiry, double-checked locking); list pagination (`MarkMonitorPage.TotalPages`); CSR PEM/DER handling via BouncyCastle; ECC named-curve validation; the process-local enrollment dedup cache (5-min, keyed org\|product\|subject\|csr); `MarkMonitorCertificateStatusToCAStatus` mapping; `BuildErrorString` error parsing; org/contact/group resolution; `SendWithRetryAsync` (3-attempt retry with jittered exponential backoff on network failures/timeouts and 5xx/429, honoring `Retry-After` on 429 - **not** used for the order-create POST or the reissue PATCH, both of which risk creating a duplicate billable resource on an ambiguous failure); `HttpClient.Timeout` from the `TimeoutSeconds` config field (default 120s, clamped 1-120 - never above the pre-existing hardcoded default). |
+| `Client/MarkMonitorClient.cs` | The MarkMonitor REST HTTP client. Owns: bearer-token auth (`X-API-KEY` header + username/password → token, cached with 30s early-expiry, double-checked locking); list pagination (`MarkMonitorPage.TotalPages`); CSR PEM/DER handling via BouncyCastle; ECC named-curve validation; the process-local enrollment dedup cache (5-min, keyed org\|product\|subject\|csr); `MarkMonitorCertificateStatusToCAStatus` mapping; `BuildErrorString` error parsing; org/contact/group resolution; `SendWithRetryAsync` (3-attempt retry with jittered exponential backoff on network failures/timeouts and 5xx/429, honoring `Retry-After` on 429 capped at 120s - **not** used for the order-create POST, the reissue PATCH, or `AuthenticateAsync`'s own POST: the first two risk creating a duplicate billable resource on an ambiguous failure, and auth runs inside `_authLock`, so retrying there would multiply how long *every* concurrent caller on the same cached client blocks, not just the degraded call); `HttpClient.Timeout` from the `TimeoutSeconds` config field (default 120s, clamped 1-120 - never above the pre-existing hardcoded default). |
 | `MarkMonitorCAPluginConfig.cs` | CA-connection + enrollment-parameter schema, UI annotations/defaults, and canonical field-name constants: `ConfigConstants` (ApiKey, Username, Password=`"Password"`, BaseUrl, OrgId=`"OrgId"`, Enabled, TimeoutSeconds, PageSize, ForceCompleteSync, PickupRetries, PickupDelaySeconds) and `EnrollmentConfigConstants` (AdditionalEmails, MarkmonitorGroup, MarkmonitorContact, DCVMethod, comments, locale, provider, RenewalWindowDays). Also `ConfigurationValidationException`. |
 | `MarkMonitorConfig.cs` | The deserialized CA-connection config type used at runtime. |
 | `Models/` | Request/response DTOs (orders, organizations, contacts, groups, token) + `Enums.cs`. |
@@ -54,18 +54,23 @@ MarkMonitor's SSL API is backed by **DigiCert** (the only `provider` it supports
   curve) → `POST /certs/v1/order`. Accepted orders usually return `CREATED` →
   `EXTERNALVALIDATION` (pending DCV/approval) - MarkMonitor never issues synchronously from the
   create-order call. `PollForIssuanceAsync` (inside the dedup reservation, so a folded-in concurrent
-  duplicate sees the polled result too) then polls `GetSingleOrderAsync`'s underlying fetch up to
-  `PickupRetries` times (every `PickupDelaySeconds`) for a product whose DCV/approval resolves
-  quickly, stopping early on either issuance or a terminal non-issued status; `PickupRetries=0`
-  (not the default) skips polling entirely. `RenewOrReissue` places a new order then revokes the
-  prior cert (via `PriorCertSN` → `ICertificateDataReader`), but only when that prior cert's
-  resolvable expiration date is within its `RenewalWindowDays` template param (default 90) - if it's
-  resolvable and outside the window, the prior cert is left unrevoked and the request behaves like a
-  plain new issuance (unresolvable expiration falls back to always revoking, the pre-existing
-  behavior). No in-place renew/reissue in the enroll path. MarkMonitor issues CN ∪ order `dnsNames` - it does **not** honor a CSR's own SAN extension
-  as authoritative - so `BuildDnsNames` unions the Enroll `san` dictionary (`Dns`/`dnsname` keys,
-  case-insensitive) with any SAN extension embedded in the CSR itself before submitting; non-DNS SAN
-  types (IP/email/URI) have no MarkMonitor field and are dropped with a logged warning.
+  duplicate sees the polled result too) then polls its own single-attempt order fetch (not itself
+  retried, unlike most other GETs - see `Client/MarkMonitorClient.cs` above) up to `PickupRetries`
+  times (every `PickupDelaySeconds`) for a product whose DCV/approval resolves quickly, stopping
+  early on either issuance or a terminal non-issued status; `PickupRetries=0` (not the default)
+  skips polling entirely. `RenewOrReissue` places a new order then revokes the prior cert (via
+  `PriorCertSN` → `ICertificateDataReader`), but only when that prior cert's resolvable expiration
+  date is within its `RenewalWindowDays` template param (default 90) - if it's resolvable and
+  outside the window, the prior cert is left unrevoked and the request behaves like a plain new
+  issuance (unresolvable expiration falls back to always revoking, the pre-existing behavior). No
+  in-place renew/reissue in the enroll path. MarkMonitor issues CN ∪ order `dnsNames` - it does
+  **not** honor a CSR's own SAN extension as authoritative - so `BuildDnsNames` uses the Enroll
+  `san` dictionary (`Dns`/`dnsname` keys, case-insensitive) as the primary source; a SAN extension
+  embedded in the CSR itself is used only when `san` is `null` (Command never populated SAN data at
+  all), never when it's non-null even if empty, since a non-null dictionary means Command's own
+  enrollment pattern is authoritative for this request and a subscriber-generated CSR must not be
+  able to add domains beyond what that pattern authorized. Non-DNS SAN types (IP/email/URI) have no
+  MarkMonitor field and are dropped with a logged warning.
 - **Revoke:** requires `OrgId`; resolves it to a GUID, fetches order, compares owning org as parsed
   GUIDs, then `PATCH /certs/v1/order/{id}/revoke`. Reason code has no MarkMonitor field (logged only).
   `CancelCertificateAsync` takes the same optional `orgName` parameter and runs the identical

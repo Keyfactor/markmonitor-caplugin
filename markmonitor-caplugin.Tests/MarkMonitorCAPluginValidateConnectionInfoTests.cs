@@ -112,4 +112,49 @@ public class MarkMonitorCAPluginValidateConnectionInfoTests
 
         Assert.Contains("listing organizations failed", ex.Message);
     }
+
+    [Fact]
+    public async Task ValidateCAConnectionInfo_WithAMalformedNumericField_ThrowsASanitizedErrorRatherThanCrashing()
+    {
+        // Regression test: the connectionInfo-to-MarkMonitorConfig deserialization used to sit
+        // outside both inner try/catch blocks, so a non-numeric value for one of the Number-typed
+        // fields threw a raw, unlogged JsonSerializationException instead of this method's designed
+        // sanitized AnyCAValidationException. No client is injected here on purpose, since that's
+        // the only path that reaches the real (non-test-seam) deserialization.
+        var plugin = new MarkMonitorCAPlugin();
+        var connectionInfo = ValidConnectionInfo();
+        connectionInfo[MarkMonitorCAPluginConfig.ConfigConstants.PageSize] = "not-a-number";
+
+        var ex = await Assert.ThrowsAsync<AnyCAValidationException>(() =>
+            plugin.ValidateCAConnectionInfo(connectionInfo));
+
+        Assert.Contains("could not be parsed", ex.Message);
+    }
+
+    [Fact]
+    public async Task ValidateCAConnectionInfo_WithEnabledFalse_SkipsTheLiveConnectivityCheck()
+    {
+        // Regression test: Enabled's own documented purpose is letting an admin save the CA
+        // connector before real MarkMonitor credentials are available. The new live-connectivity
+        // check used to run unconditionally, breaking that pre-existing, documented workflow for a
+        // connector saved with placeholder credentials while disabled. No client is injected and an
+        // unroutable address is used on purpose - the assertion is that no live call is even
+        // attempted, not that one succeeds.
+        var plugin = new MarkMonitorCAPlugin();
+        var connectionInfo = ValidConnectionInfo("https://127.0.0.1:1");
+        connectionInfo[MarkMonitorCAPluginConfig.ConfigConstants.Enabled] = false;
+
+        await plugin.ValidateCAConnectionInfo(connectionInfo);
+    }
+
+    [Fact]
+    public async Task ValidateCAConnectionInfo_WithEnabledTrueOrAbsent_StillPerformsTheLiveConnectivityCheck()
+    {
+        var plugin = new MarkMonitorCAPlugin();
+        var connectionInfo = ValidConnectionInfo("https://127.0.0.1:1");
+        connectionInfo[MarkMonitorCAPluginConfig.ConfigConstants.Enabled] = true;
+
+        await Assert.ThrowsAsync<AnyCAValidationException>(() =>
+            plugin.ValidateCAConnectionInfo(connectionInfo));
+    }
 }

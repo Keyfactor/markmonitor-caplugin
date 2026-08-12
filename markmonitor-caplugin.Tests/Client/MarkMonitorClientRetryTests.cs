@@ -111,6 +111,34 @@ public class MarkMonitorClientRetryTests
     }
 
     [Fact]
+    public async Task ListOrganizationsAsync_On429WithAnExcessiveRetryAfterHeader_CapsTheDelay()
+    {
+        // Regression test: Retry-After is server-controlled input - a misbehaving/compromised
+        // endpoint returning an enormous value must not be trusted verbatim, since that delay can
+        // execute while _authLock is held (the auth call path) with no way to cancel it.
+        var recordedDelays = new List<TimeSpan>();
+        var rateLimited = FakeHttpMessageHandler.Json(HttpStatusCode.TooManyRequests, "{}");
+        rateLimited.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromDays(1));
+        var handler = new FakeHttpMessageHandler()
+            .WithSuccessfulAuth()
+            .When(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                rateLimited,
+                FakeHttpMessageHandler.Json(HttpStatusCode.OK,
+                    SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact())));
+        var client = handler.BuildClient(delay: (delay, _) =>
+        {
+            recordedDelays.Add(delay);
+            return Task.CompletedTask;
+        });
+        await client.AuthenticateAsync();
+
+        var result = await client.ListOrganizationsAsync();
+
+        Assert.NotEmpty(result);
+        Assert.Equal(TimeSpan.FromSeconds(120), Assert.Single(recordedDelays));
+    }
+
+    [Fact]
     public async Task ListOrganizationsAsync_On500WithoutRetryAfter_BacksOffExponentiallyWithJitter()
     {
         var recordedDelays = new List<TimeSpan>();

@@ -84,6 +84,11 @@ must be provided before the connector can be saved in an enabled state.
 | `BaseUrl` | Required | No | `https://api.markmonitor.com` | The MarkMonitor API base URL. Must start with `https://` — credentials and the bearer token are sent to it. |
 | `OrgId` | Required | No | *(none)* | The MarkMonitor organization to use for API calls. Accepts either the organization **name** (e.g. `MarkMonitor`) or its **ID in GUID format**. Used to scope enrollment and to verify ownership on revoke. |
 | `Enabled` | Optional | No | `true` | Enables or disables gateway functionality. Disable to allow the CA to be created before configuration information is available. |
+| `TimeoutSeconds` | Optional | No | `120` | The HTTP request timeout, in seconds, for calls to the MarkMonitor API. Clamped to 1-120. |
+| `PageSize` | Optional | No | `100` | The number of certificate orders requested per page during synchronization. Clamped to 1-500. |
+| `ForceCompleteSync` | Optional | No | `false` | When `true`, bypasses the skip-unchanged synchronization optimization and re-emits every order on every sync. |
+| `PickupRetries` | Optional | No | `5` | How many times `Enroll` polls a freshly-created order for issuance before returning it in its still-pending state. `0` disables polling. Clamped to 0-20. |
+| `PickupDelaySeconds` | Optional | No | `10` | The delay, in seconds, between issuance pickup polls. Clamped to 0-60. |
 
 > **Note:** Credentials are stored in Keyfactor Command's encrypted gateway configuration. `ApiKey`
 > and `Password` are masked in the UI and are never written to logs by the plugin.
@@ -114,6 +119,7 @@ enrollment time.
 | `comments` | String | `Requested via Keyfactor Command` | Free-text comments attached to the MarkMonitor order. |
 | `locale` | String | `en` | Locale for the MarkMonitor order. |
 | `provider` | String | `DIGICERT` | The certificate provider for the order. `DIGICERT` is currently the only provider the MarkMonitor API supports. |
+| `RenewalWindowDays` | Number | `90` | For a `RenewOrReissue` enrollment, how many days before its expiration the prior certificate must be within before it's revoked after the replacement issues. Outside that window, the prior certificate is left unrevoked and the request is treated like a plain new issuance. An invalid (non-numeric or non-positive) value falls back to the default. |
 
 > **Note on DCV:** The plugin passes the selected `DCVMethod` to MarkMonitor but does not itself
 > automate DNS/HTTP token publication. For `EMAIL` (the default), MarkMonitor falls back to the
@@ -202,26 +208,46 @@ sequenceDiagram
                 Plugin->>Plugin: Skip for this sync
             else Order has a certificate
                 Plugin->>Plugin: Map the MarkMonitor status to a Keyfactor status
-                Plugin->>Plugin: Assemble the full certificate chain
-                Plugin->>CMD: Add certificate to Command's inventory
+                alt Unchanged since Command's last known status (and not forced)
+                    Plugin->>Plugin: Skip re-emission
+                else New or changed
+                    Plugin->>Plugin: Assemble the full certificate chain
+                    Plugin->>CMD: Add certificate to Command's inventory
+                end
             end
         end
     end
 
-    Plugin-->>CMD: Synchronization complete
+    Plugin-->>CMD: Synchronization complete (emitted / skipped-unchanged / errored counts)
 ```
 
+> A record that fails to process is logged, counted, and skipped rather than aborting the sync - but
+> the sync aborts outright if more than 25% of records fail once at least 50 have been observed.
+
 > The current implementation always performs a full listing of orders on each sync, rather than only
-> retrieving certificates that changed since the last sync. Orders that have not yet produced a
-> certificate are simply skipped for that sync rather than treated as an error.
+> retrieving certificates that changed since the last sync - `PageSize` optimizes the *mitigation*, not
+> the listing itself: each order is compared against what Command already has for that request ID, and
+> skipped (not re-emitted) when the status is unchanged, unless `ForceCompleteSync` is enabled or
+> Command requests a full sync. Orders that have not yet produced a certificate are simply skipped for
+> that sync rather than treated as an error. A record that fails to process (bad status string, bad
+> date, unexpected null) is logged and skipped rather than aborting the sync - but if more than 25% of
+> records fail once at least 50 have been observed, the sync aborts outright rather than reporting a
+> quietly near-empty "success".
 
 ### Certificate Enrollment (including Renewal / Reissue)
 
 When a requester submits a certificate request through Keyfactor Command, the plugin translates it
 into a MarkMonitor order: it resolves the organization, contact, and (optional) group; validates and
-normalizes the CSR; and submits the order. Because Domain Control Validation (and, in some
-environments, manual approval) is required before issuance, a newly submitted order is typically
-accepted in a pending state rather than coming back with an issued certificate right away.
+normalizes the CSR; and submits the order. MarkMonitor never issues synchronously from the
+create-order call - a newly submitted order always comes back pending (typically `CREATED`), since
+Domain Control Validation (and, in some environments, manual approval) is required first. For a
+product whose DCV/approval resolves quickly, the plugin polls the order for up to `PickupRetries`
+attempts (every `PickupDelaySeconds`) before returning, so Command can get the issued certificate
+back from the enroll call itself rather than always waiting for the next sync; `PickupRetries=0`
+disables this and restores the original always-returns-pending behavior. Each poll is a single
+attempt, but if MarkMonitor is slow to respond (rather than erroring) it can still take up to
+`TimeoutSeconds` per attempt - size any upstream timeout around `PickupRetries * (PickupDelaySeconds
++ TimeoutSeconds)`, the real worst case, not just `PickupRetries * PickupDelaySeconds`.
 
 ```mermaid
 sequenceDiagram
@@ -241,6 +267,13 @@ sequenceDiagram
         Plugin->>API: Submit the certificate order
         API-->>Plugin: Order accepted — order ID and status
 
+        opt Not yet issued and PickupRetries > 0
+            loop Up to PickupRetries times, every PickupDelaySeconds
+                Plugin->>API: Poll the order
+                API-->>Plugin: Current status
+            end
+        end
+
         alt Renewal/Reissue request
             Plugin->>API: Revoke the certificate being replaced
         end
@@ -249,11 +282,17 @@ sequenceDiagram
     end
 ```
 
+> A concurrent duplicate request folded into this same in-flight reservation (the "identical request
+> already submitted" branch above) receives the polled result too, not just the original pending
+> status - the fold happens after polling completes, not before.
+
 MarkMonitor has no in-place "renew" enrollment endpoint through this plugin, so a Renewal/Reissue
 request always places a brand-new order. Once the replacement certificate has been created
-successfully, the plugin revokes the certificate it is replacing. If the certificate being replaced
-can't be identified, the request is simply treated as a new issuance — a failure to revoke the old
-certificate never blocks delivery of the new one.
+successfully, the plugin revokes the certificate it is replacing — but only if that certificate is
+within its `RenewalWindowDays` template parameter (default 90) of expiring. If the certificate being
+replaced can't be identified, or still has substantial life left (outside the renewal window), the
+request is simply treated as a new issuance and the prior certificate is left alone — a failure to
+revoke the old certificate never blocks delivery of the new one either.
 
 ### Revocation
 
@@ -295,12 +334,24 @@ flowchart TD
     C -- Not https --> E
     C -- OK --> D{"Organization present?"}
     D -- Missing --> E
-    D -- Present --> F([Connector saved])
+    D -- Present --> N{"Enabled?"}
+    N -- No --> F([Connector saved])
+    N -- Yes --> G{"Authenticate with the<br/>submitted credentials"}
+    G -- Fails --> E
+    G -- Succeeds --> H{"At least one organization<br/>visible?"}
+    H -- No / fails --> E
+    H -- Yes --> F
 ```
 
-This check validates the configuration fields themselves — it does not place a live call to
-MarkMonitor. Use the connector's connection test to confirm live connectivity; that test
-authenticates with MarkMonitor and confirms that at least one organization is visible.
+After the field checks above pass - and only if the connector is being saved enabled - the plugin
+also places a live call to MarkMonitor: it authenticates with the submitted (not yet saved)
+credentials and confirms at least one organization is visible, using a transient client built from
+exactly what's about to be saved — never the connector's already-cached client, which could be
+validating stale credentials. Saving with `Enabled` set to `false` skips this live check entirely,
+preserving that field's own documented purpose: creating the connector before real credentials are
+available. A failure at any step (parsing the submitted configuration, authenticating, or listing
+organizations) is summarized rather than forwarding the raw HTTP response or exception detail, which
+could otherwise leak transport-layer detail to the UI.
 
 ### Order Status Mapping
 

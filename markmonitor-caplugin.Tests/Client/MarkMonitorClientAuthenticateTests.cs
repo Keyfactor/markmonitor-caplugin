@@ -124,4 +124,24 @@ public class MarkMonitorClientAuthenticateTests
                  m.Contains("Password is required", StringComparison.Ordinal));
         Assert.Empty(handler.Requests);
     }
+
+    [Fact]
+    public async Task AuthenticateAsync_WhenTheAuthEndpointFails_DoesNotRetry()
+    {
+        // Regression test: AuthenticateAsync runs entirely inside EnsureAuthenticatedAsync's shared
+        // _authLock, held by every other concurrent Enroll/Revoke/Sync call on the same cached client
+        // that also needs a token. Retrying here (as SendWithRetryAsync would) multiplies the
+        // worst-case lock-hold time up to 3x a full HTTP timeout plus backoff during exactly the
+        // "MarkMonitor is degraded" scenario where that matters most - a single attempt here is
+        // deliberate, not an oversight.
+        var handler = new FakeHttpMessageHandler()
+            .When(req => FakeHttpMessageHandler.Is(req, "POST", "/auth/v1/auth/authenticate"),
+                FakeHttpMessageHandler.Json(HttpStatusCode.InternalServerError,
+                    """{"errors":[{"code":"request.genericError","message":"An unexpected error occurred."}]}"""));
+        var client = handler.BuildClient();
+
+        await Assert.ThrowsAnyAsync<Exception>(() => client.AuthenticateAsync());
+
+        Assert.Equal(1, handler.Requests.Count(r => FakeHttpMessageHandler.Is(r, "POST", "/auth/v1/auth/authenticate")));
+    }
 }

@@ -74,6 +74,44 @@ public class MarkMonitorCAPluginConfig
                 Hidden = false,
                 DefaultValue = true,
                 Type = "Boolean"
+            },
+            [ConfigConstants.TimeoutSeconds] = new()
+            {
+                Comments = "The HTTP request timeout, in seconds, for calls to the MarkMonitor API. Default is 120.",
+                Hidden = false,
+                DefaultValue = 120,
+                Type = "Number"
+            },
+            [ConfigConstants.PageSize] = new()
+            {
+                Comments =
+                    "The number of certificate orders requested per page during synchronization (1-500). Default is 100.",
+                Hidden = false,
+                DefaultValue = 100,
+                Type = "Number"
+            },
+            [ConfigConstants.ForceCompleteSync] = new()
+            {
+                Comments =
+                    "When true, bypasses the skip-unchanged optimization and re-emits every order on every synchronization. Default is false.",
+                Hidden = false,
+                DefaultValue = false,
+                Type = "Boolean"
+            },
+            [ConfigConstants.PickupRetries] = new()
+            {
+                Comments =
+                    "How many times to poll a freshly-created order for issuance before returning it in its still-pending state. 0 disables polling. Default is 5.",
+                Hidden = false,
+                DefaultValue = 5,
+                Type = "Number"
+            },
+            [ConfigConstants.PickupDelaySeconds] = new()
+            {
+                Comments = "The delay, in seconds, between issuance pickup polls. Default is 10.",
+                Hidden = false,
+                DefaultValue = 10,
+                Type = "Number"
             }
         };
     }
@@ -137,6 +175,14 @@ public class MarkMonitorCAPluginConfig
                 Hidden = false,
                 DefaultValue = "DIGICERT",
                 Type = "String"
+            },
+            [EnrollmentConfigConstants.RenewalWindowDays] = new()
+            {
+                Comments =
+                    "For a RenewOrReissue enrollment, how many days before its expiration a prior certificate must be within before it is revoked after being replaced. Outside this window, the prior certificate is left unrevoked and the request is treated like a plain new issuance. Default is 90.",
+                Hidden = false,
+                DefaultValue = 90,
+                Type = "Number"
             }
         };
     }
@@ -170,6 +216,26 @@ public class MarkMonitorCAPluginConfig
         /// The enabled flag property name.
         /// </summary>
         public const string Enabled = "Enabled";
+        /// <summary>
+        /// The HTTP request timeout (seconds) property name.
+        /// </summary>
+        public const string TimeoutSeconds = "TimeoutSeconds";
+        /// <summary>
+        /// The sync page size property name.
+        /// </summary>
+        public const string PageSize = "PageSize";
+        /// <summary>
+        /// The force-complete-sync flag property name.
+        /// </summary>
+        public const string ForceCompleteSync = "ForceCompleteSync";
+        /// <summary>
+        /// The pickup poll retry count property name.
+        /// </summary>
+        public const string PickupRetries = "PickupRetries";
+        /// <summary>
+        /// The pickup poll delay (seconds) property name.
+        /// </summary>
+        public const string PickupDelaySeconds = "PickupDelaySeconds";
     }
 
     /// <summary>
@@ -247,5 +313,9 @@ public class MarkMonitorCAPluginConfig
         /// The certificate provider parameter name.
         /// </summary>
         public const string Provider = "provider";
+        /// <summary>
+        /// The renewal window (days) parameter name.
+        /// </summary>
+        public const string RenewalWindowDays = "RenewalWindowDays";
     }
 }

@@ -272,9 +272,16 @@ public class MarkMonitorClientEnrollIdempotencyTests
         // stale exception replayed at it instead of a fresh attempt - a single transient blip during
         // org lookup meant a guaranteed enrollment failure for the rest of the dedupe window, with zero
         // risk of a duplicate order to justify it.
+        //
+        // Three consecutive failures (not one) are needed here since SendWithRetryAsync (added for
+        // client-level retry) now retries a transient network error up to 3 times on its own before
+        // giving up - a single failure would be transparently absorbed by that retry and never reach
+        // EnrollCertificateAsync's own ambiguity handling at all.
         var handler = new FakeHttpMessageHandler()
             .WithSuccessfulAuth()
             .WhenAsync(req => FakeHttpMessageHandler.Is(req, "GET", "/certs/v1/organization"),
+                _ => Task.FromException<HttpResponseMessage>(new HttpRequestException("Simulated connection reset")),
+                _ => Task.FromException<HttpResponseMessage>(new HttpRequestException("Simulated connection reset")),
                 _ => Task.FromException<HttpResponseMessage>(new HttpRequestException("Simulated connection reset")),
                 _ => Task.FromResult(FakeHttpMessageHandler.Json(HttpStatusCode.OK,
                     SampleOrgs.OrgsListResponse(SampleOrgs.OrgWithContact()))))

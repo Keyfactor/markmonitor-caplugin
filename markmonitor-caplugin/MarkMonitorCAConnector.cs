@@ -129,7 +129,11 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             _logger.LogDebug("CreateAndAuthenticateClientAsync completed");
 
             _logger.LogInformation("Attempting to synchronize certificates with MarkMonitor API");
-            var certificates = await client.GetCertificateInventoryAsync("", "", 100, blockingBuffer, cancelToken);
+            // Command's own fullSync flag forces a complete resync same as the ForceCompleteSync
+            // connection setting does - either one bypasses the skip-unchanged optimization.
+            var forceCompleteSync = fullSync || _config.ForceCompleteSync;
+            var certificates = await client.GetCertificateInventoryAsync("", "", _config.PageSize, blockingBuffer,
+                cancelToken, _certificateDataReader, forceCompleteSync);
             _logger.LogDebug("Synchronized {Certificates} certificates", certificates);
 
             // Check for cancellation after operation
@@ -230,19 +234,31 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         }
     }
 
+    private const int DefaultRenewalWindowDays = 90;
+
     /// <summary>
     /// For a RenewOrReissue enrollment, the AnyGateway core framework passes the prior
     /// certificate's serial number in productInfo.ProductParameters["PriorCertSN"]. Resolves it to a
     /// CARequestID via the injected ICertificateDataReader and revokes it now that the replacement
-    /// certificate has issued successfully. Falls back to treating the enrollment as a plain new
-    /// issuance (no revoke attempted) if PriorCertSN is missing or can't be resolved - a failure to
-    /// revoke the old certificate should not fail delivery of the new one.
+    /// certificate has issued successfully - but only when the prior certificate is actually within
+    /// its <c>RenewalWindowDays</c> template parameter (default 90) of expiring; certinext's model,
+    /// applied here since MarkMonitor likewise has no in-place "renew" endpoint, so the window gates
+    /// revoke behavior rather than endpoint choice. A prior cert with substantial life left outside
+    /// that window is left unrevoked - this "renewal" is instead treated like a plain new issuance.
+    /// Falls back to treating the enrollment as a plain new issuance (no revoke attempted) if
+    /// PriorCertSN is missing or can't be resolved - a failure to revoke the old certificate should
+    /// not fail delivery of the new one.
     /// </summary>
+    /// <summary>Case-insensitive enrollment product-parameter lookup, matching every other
+    /// template-parameter lookup in this file (Command's parameter keys aren't guaranteed to arrive
+    /// in any particular casing).</summary>
+    private static string GetProductParameter(Dictionary<string, string> productParameters, string key) =>
+        productParameters?.FirstOrDefault(kv => string.Equals(kv.Key, key, StringComparison.OrdinalIgnoreCase)).Value;
+
     private async Task RevokePriorCertificateIfPresentAsync(MarkMonitorClient client,
         EnrollmentProductInfo productInfo, string subject, string newCaRequestId)
     {
-        var priorCertSn = productInfo.ProductParameters?
-            .FirstOrDefault(kv => string.Equals(kv.Key, "PriorCertSN", StringComparison.OrdinalIgnoreCase)).Value;
+        var priorCertSn = GetProductParameter(productInfo.ProductParameters, "PriorCertSN");
         // PriorCertSN is a caller-supplied enrollment product parameter - log a CR/LF-escaped copy so
         // an embedded CR/LF can't forge a fake log line (CWE-117), matching every other caller-supplied
         // value in this file.
@@ -265,6 +281,22 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             return;
         }
 
+        var renewalWindowDays = ParseRenewalWindowDays(productInfo.ProductParameters);
+        var priorCertExpiration = _certificateDataReader.GetExpirationDateByRequestId(priorRequestId);
+        if (priorCertExpiration != null)
+        {
+            var daysUntilExpiration = (priorCertExpiration.Value - DateTime.UtcNow).TotalDays;
+            if (daysUntilExpiration > renewalWindowDays)
+            {
+                _logger.LogInformation(
+                    "Prior certificate {PriorRequestId} does not expire for {DaysUntilExpiration:F0} more day(s), outside the configured RenewalWindowDays ({RenewalWindowDays}) - leaving it unrevoked and treating this enrollment like a plain new issuance",
+                    priorRequestId, daysUntilExpiration, renewalWindowDays);
+                return;
+            }
+        }
+        // Expiration unresolvable (null): fall back to the pre-existing behavior (always revoke)
+        // rather than silently changing behavior when there isn't enough data to apply the new gate.
+
         try
         {
             EnsureOrgNameConfigured();
@@ -280,6 +312,26 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
                 "Failed to revoke prior certificate {PriorRequestId} after it was replaced by {NewCaRequestId}: {EMessage}",
                 priorRequestId, newCaRequestId, e.Message);
         }
+    }
+
+    /// <summary>Parses the RenewalWindowDays template parameter (case-insensitive key, matching
+    /// every other enrollment parameter lookup in this file); absent or invalid (non-positive,
+    /// non-numeric) falls back to <see cref="DefaultRenewalWindowDays"/> rather than failing the
+    /// enrollment over a template misconfiguration. A value that's present but rejected is logged -
+    /// unlike a value that's simply absent - since this silently changes a security-relevant revoke
+    /// decision and an administrator who mistyped it would otherwise have no signal from the gateway
+    /// logs that their configured window was never actually applied.</summary>
+    private int ParseRenewalWindowDays(Dictionary<string, string> productParameters)
+    {
+        var raw = GetProductParameter(productParameters, "RenewalWindowDays");
+        if (string.IsNullOrWhiteSpace(raw)) return DefaultRenewalWindowDays;
+
+        if (int.TryParse(raw, out var parsed) && parsed > 0) return parsed;
+
+        _logger.LogWarning(
+            "Invalid RenewalWindowDays value '{RenewalWindowDays}' - must be a positive integer; falling back to the default of {DefaultRenewalWindowDays} day(s)",
+            LogSanitizer.ForLog(raw), DefaultRenewalWindowDays);
+        return DefaultRenewalWindowDays;
     }
 
     /// <summary>
@@ -389,6 +441,103 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         else _logger.LogDebug($"{MarkMonitorConstants.ConfigConstants.OrgName} is set");
         _logger.LogTrace("MarkMonitor Organization Name: {OrgName}", orgName);
         if (errors.Any()) ThrowValidationException(errors);
+
+        // Enabled's own documented purpose (GetPluginAnnotations' Comments) is letting an admin
+        // create the CA connector before real MarkMonitor credentials are available - a workflow the
+        // field-presence/format checks above already accommodate (they only require *some*
+        // syntactically-valid values, not working ones). The live-connectivity check below must not
+        // undermine that pre-existing capability by requiring real connectivity even for a
+        // deliberately-disabled, not-yet-configured connector.
+        var enabled = !connectionInfo.TryGetValue(MarkMonitorConstants.ConfigConstants.Enabled, out var aEnabled) ||
+                      aEnabled is not bool enabledFlag || enabledFlag;
+        if (!enabled)
+        {
+            _logger.LogInformation(
+                "CA connector is disabled - skipping the live MarkMonitor connectivity check");
+            _logger.LogInformation("CA Connection Info validated successfully");
+            _logger.MethodExit();
+            return;
+        }
+
+        // The aggregated checks above only confirm the fields are present and well-formed - not that
+        // they're actually valid MarkMonitor credentials. Build a transient client from the submitted
+        // connectionInfo itself (never _cachedClient, which may hold stale/different creds from a
+        // previous save) so validation reflects exactly what's about to be saved. A test-injected
+        // client (see the constructor overload) is reused as-is instead, the same seam every other
+        // method in this class already relies on for testability - and it must not be disposed here,
+        // since its lifecycle belongs to whoever injected it, not to this one validation call.
+        MarkMonitorConfig tempConfig = null;
+        MarkMonitorClient tempClient = _markMonitorClientWasInjected ? Client : null;
+        try
+        {
+            if (!_markMonitorClientWasInjected)
+            {
+                try
+                {
+                    var rawConfig = JsonConvert.SerializeObject(connectionInfo);
+                    tempConfig = JsonConvert.DeserializeObject<MarkMonitorConfig>(rawConfig);
+                    tempConfig.BaseUrl = baseURL; // the resolved effective value (blank -> the default above)
+                    tempClient = BuildClient(tempConfig);
+                }
+                catch (Exception e)
+                {
+                    // A field the aggregated checks above don't cover (e.g. a non-numeric value for
+                    // one of the Number-typed fields) can fail deserialization here - caught and
+                    // sanitized like every other failure mode in this method, rather than letting a
+                    // raw JsonSerializationException (which can embed field paths/values) escape
+                    // unlogged. e.Message itself echoes the rejected connectionInfo value verbatim
+                    // (e.g. "Could not convert string to integer: <value>") - sanitized here too, so
+                    // an embedded CR/LF in that value can't forge a fake log line (CWE-117), matching
+                    // every other caller-supplied value logged in this file.
+                    _logger.LogError("CA connection validation failed while parsing the submitted configuration: {EMessage}",
+                        LogSanitizer.ForLog(e.Message));
+                    throw new AnyCAValidationException(
+                        "The submitted configuration could not be parsed. See gateway logs for details.");
+                }
+            }
+
+            try
+            {
+                await tempClient.AuthenticateAsync();
+            }
+            catch (Exception e)
+            {
+                // The real exception/response detail is deliberately not forwarded to the UI - it may
+                // carry HTTP response fragments, headers, or other transport-layer detail.
+                _logger.LogError("CA connection live validation failed during authentication: {EMessage}",
+                    e.Message);
+                throw new AnyCAValidationException(
+                    "Authentication failed with the submitted MarkMonitor credentials. See gateway logs for details.");
+            }
+
+            try
+            {
+                var orgs = await tempClient.ListOrganizationsAsync(0, 1);
+                if (orgs == null || orgs.Count == 0)
+                    throw new Exception("No MarkMonitor organizations are visible to the submitted credentials");
+            }
+            catch (Exception e)
+            {
+                _logger.LogError("CA connection live validation failed while listing organizations: {EMessage}",
+                    e.Message);
+                throw new AnyCAValidationException(
+                    "Authenticated with MarkMonitor, but listing organizations failed. See gateway logs for details.");
+            }
+        }
+        finally
+        {
+            if (!_markMonitorClientWasInjected) tempClient?.Dispose();
+            // Best-effort credential scrubbing: blank out the secret fields on the transient config so
+            // they aren't reachable from this now-unreferenced object after this method returns. Not a
+            // hard guarantee (the runtime may already have copied them elsewhere), but removes the most
+            // obvious post-validation reference chain - certinext's pattern.
+            if (tempConfig != null)
+            {
+                tempConfig.ApiKey = string.Empty;
+                tempConfig.ApiPassword = string.Empty;
+            }
+        }
+
         _logger.LogInformation("CA Connection Info validated successfully");
         _logger.MethodExit();
     }
@@ -403,6 +552,17 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
     public Task ValidateProductInfo(EnrollmentProductInfo productInfo, Dictionary<string, object> connectionInfo)
     {
         _logger.MethodEntry();
+
+        // Unlike MarkmonitorContact/MarkmonitorGroup above, this is a cheap static check - no live
+        // MarkMonitor call - so there's no tradeoff in failing fast on it at template-save time.
+        // Enum.TryParse alone isn't enough: it happily "succeeds" for any numeric string that fits
+        // the underlying int type even when no member is actually defined for that value (e.g. "20"
+        // for a 12-member enum) - Enum.IsDefined is the check that actually enforces membership.
+        if (!Enum.TryParse<CertOrderTypes>(productInfo.ProductID, out var parsedProductId) ||
+            !Enum.IsDefined(typeof(CertOrderTypes), parsedProductId))
+            throw new AnyCAValidationException(
+                $"'{LogSanitizer.ForLog(productInfo.ProductID)}' is not a valid MarkMonitor product ID. Valid values are: {string.Join(", ", Enum.GetNames(typeof(CertOrderTypes)))}");
+
         _logger.LogInformation("Product info validated successfully");
         _logger.MethodExit();
         return Task.CompletedTask;
@@ -454,6 +614,14 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
         
     }
 
+    /// <summary>Builds a real MarkMonitorClient from the given config - the one place this
+    /// connector's own construction argument list lives, shared by the cached-client path
+    /// (<see cref="CreateAndAuthenticateClientAsync"/>) and the transient one
+    /// (<see cref="ValidateCAConnectionInfo"/>).</summary>
+    private static MarkMonitorClient BuildClient(MarkMonitorConfig config) =>
+        new(config.BaseUrl, config.ApiKey, config.ApiUsername, config.ApiPassword, true,
+            timeoutSeconds: config.TimeoutSeconds);
+
     /// <summary>
     /// Returns a single MarkMonitorClient shared for the lifetime of this plugin instance, building
     /// it (or adopting an injected one) on first use only. Each of MarkMonitorClient's own methods
@@ -470,15 +638,7 @@ public class MarkMonitorCAPlugin : IAnyCAPlugin
             await _clientLock.WaitAsync();
             try
             {
-                _cachedClient ??= _markMonitorClientWasInjected
-                    ? Client
-                    : new MarkMonitorClient(
-                        _config.BaseUrl,
-                        _config.ApiKey,
-                        _config.ApiUsername,
-                        _config.ApiPassword,
-                        true
-                    );
+                _cachedClient ??= _markMonitorClientWasInjected ? Client : BuildClient(_config);
             }
             finally
             {

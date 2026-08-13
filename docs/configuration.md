@@ -31,6 +31,11 @@ field except `Enabled` must be filled in before the connector can be saved and e
 | `BaseUrl` | Yes | No | `https://api.markmonitor.com` | The MarkMonitor API address. Must start with `https://`. |
 | `OrgId` | Yes | No | — | Your MarkMonitor organization — either its name (e.g. `MarkMonitor`) or its ID in GUID format. Used both to scope enrollment and to confirm ownership before a revoke. |
 | `Enabled` | No | No | `true` | Turns the connector on or off. Useful for saving a connector before all configuration details are ready. |
+| `TimeoutSeconds` | No | No | `120` | How long, in seconds, to wait on a single MarkMonitor API call before giving up. Clamped to 1-120. |
+| `PageSize` | No | No | `100` | How many certificate orders to request per page during synchronization (1-500). |
+| `ForceCompleteSync` | No | No | `false` | When `true`, re-imports every order on every sync instead of skipping ones that haven't changed. |
+| `PickupRetries` | No | No | `5` | How many times enrollment polls a freshly-created order for issuance before giving up and returning it pending. `0` turns this off. Clamped to 0-20. |
+| `PickupDelaySeconds` | No | No | `10` | How long to wait between issuance pickup polls. Clamped to 0-60. |
 
 Your API key and password are encrypted in Command's gateway configuration, masked in the UI, and
 never written to logs.
@@ -72,6 +77,7 @@ are read case-insensitively at enrollment time, so casing doesn't matter.
 | `comments` | String | `Requested via Keyfactor Command` | Free-text note attached to the order. |
 | `locale` | String | `en` | Locale for the order. |
 | `provider` | String | `DIGICERT` | The certificate provider. `DIGICERT` is currently the only one MarkMonitor supports. |
+| `RenewalWindowDays` | Number | `90` | For a Renewal/Reissue request, how many days before its expiration the certificate being replaced must be within before it's revoked. Outside that window, it's left alone and the request is treated like a plain new certificate. |
 
 For any DCV method other than `EMAIL`, the token/record still needs to be published outside of
 Command — this plugin passes your chosen method to MarkMonitor but doesn't automate DNS or HTTP token

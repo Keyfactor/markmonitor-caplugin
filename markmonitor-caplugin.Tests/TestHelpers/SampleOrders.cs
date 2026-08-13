@@ -33,6 +33,28 @@ public static class SampleOrders
           }
           """;
 
+    /// <summary>An order whose status has already flipped to issued but whose cert body hasn't been
+    /// populated yet - the race PollForIssuanceAsync's own completion check (and, if the poll budget
+    /// exhausts at exactly this moment, EnrollCertificateAsync's own result-consistency check) guards
+    /// against, as distinct from OrderWithNullCert's "cert is entirely absent" pending state.</summary>
+    public static string OrderIssuedWithoutCertBody(string id) =>
+        $$"""
+          {
+            "id": "{{id}}",
+            "certType": "SSL_DV_GEOTRUST",
+            "status": "DIGI_ISSUED",
+            "organizationId": "{{SampleOrgs.DefaultOrgId}}",
+            "cert": {
+              "commonName": "test.mmcertdomain.com",
+              "csr": "-----BEGIN CERTIFICATE REQUEST-----\nMII...\n-----END CERTIFICATE REQUEST-----",
+              "endEntityCert": null,
+              "revokeStatus": null,
+              "dateValidUntil": "2027-01-01T00:00:00Z",
+              "daysRemaining": 200
+            }
+          }
+          """;
+
     public static string OrdersPage(string content, int totalPages = 1) =>
         $$"""
           {

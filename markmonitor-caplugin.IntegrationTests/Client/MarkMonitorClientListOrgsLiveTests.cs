@@ -30,10 +30,11 @@ public class MarkMonitorClientListOrgsLiveTests
             Assert.False(string.IsNullOrWhiteSpace(org.Id));
 
             // TestListOrgs additionally logs each org's validations (name/type) - assert their shape
-            // is well-formed rather than just that the call didn't throw.
+            // is well-formed rather than just that the call didn't throw. `name` is not always
+            // present on real data - a DV-type validation, for example, comes back with only `type`
+            // and no `name` field at all - so only `type` is guaranteed non-empty.
             foreach (var validation in org.Validations ?? new List<MarkMonitorOrgValidation>())
             {
-                Assert.False(string.IsNullOrWhiteSpace(validation.Name));
                 Assert.False(string.IsNullOrWhiteSpace(validation.Type));
             }
         }

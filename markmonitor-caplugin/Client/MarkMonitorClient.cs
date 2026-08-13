@@ -1547,7 +1547,7 @@ public class MarkMonitorClient : IDisposable
             _logger.LogInformation("Cancelling certificate {CertificateId}", logSafeOrderId);
 
             var (success, errMsg) =
-                await PatchOrderActionAsync(orderId, orgName, "Cancelling", "cancel", "cancel");
+                await PatchOrderActionAsync(orderId, orgName, "Cancelling", "cancel");
             if (success)
             {
                 _logger.LogInformation("Certificate {CertificateId} has been cancelled", logSafeOrderId);
@@ -1575,13 +1575,13 @@ public class MarkMonitorClient : IDisposable
     // CancelCertificateAsync and RevokeCertificateAsync, which differ only in log wording handled by
     // each caller.
     private async Task<(bool success, string errMsg)> PatchOrderActionAsync(string orderId, string orgName,
-        string ownershipGerund, string ownershipVerb, string urlSuffix)
+        string ownershipGerund, string action)
     {
         await EnsureAuthenticatedAsync();
 
-        await EnsureOrderBelongsToOrganizationAsync(orderId, orgName, ownershipGerund, ownershipVerb);
+        await EnsureOrderBelongsToOrganizationAsync(orderId, orgName, ownershipGerund, action);
 
-        var url = $"{BaseUrl}/certs/v1/order/{orderId}/{urlSuffix}";
+        var url = $"{BaseUrl}/certs/v1/order/{orderId}/{action}";
         _logger.LogDebug("{Gerund} certificate at {Url}", ownershipGerund, url);
         var payload = new StringContent("{}", Encoding.UTF8, "application/json");
         var response = await SendWithRetryAsync(() => _httpClient.PatchAsync(url, payload), "PATCH", url);
@@ -1661,7 +1661,7 @@ public class MarkMonitorClient : IDisposable
                     reason, logSafeOrderId);
 
             var (success, errMsg) =
-                await PatchOrderActionAsync(orderId, orgName, "Revoking", "revoke", "revoke");
+                await PatchOrderActionAsync(orderId, orgName, "Revoking", "revoke");
             if (success)
             {
                 _logger.LogInformation("Certificate {CertificateId} has been revoked", logSafeOrderId);

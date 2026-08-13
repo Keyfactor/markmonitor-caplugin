@@ -1,0 +1,44 @@
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  body, .site-nav, .main-content, .site-header {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+</style>
+
+<script>
+  /* Dark mode is the site default (see _config.yml color_scheme); this restores a saved
+     light-mode preference as early as possible to minimize flash, and exposes the toggle
+     used by _includes/header_custom.html's button. jtd.setTheme swaps the main stylesheet's
+     href between the just-the-docs color-scheme css files generated for each scheme.
+     NOTE: this repo's layout chain runs through a compress.html layout that strips newlines
+     from the final HTML, so double-slash line comments here silently eat the rest of the
+     script - block comments only, and never write the close-comment delimiter in this text. */
+  (function () {
+    var STORAGE_KEY = "markmonitor-docs-color-scheme";
+    var DEFAULT_SCHEME = {{ site.color_scheme | jsonify }};
+
+    function applyScheme(scheme) {
+      jtd.setTheme(scheme);
+      document.documentElement.setAttribute("data-color-scheme", scheme);
+    }
+
+    var saved = null;
+    try { saved = localStorage.getItem(STORAGE_KEY); } catch (e) {}
+
+    var initial = (saved === "keyfactor" || saved === "keyfactor-dark") ? saved : DEFAULT_SCHEME;
+    if (initial !== DEFAULT_SCHEME) {
+      applyScheme(initial);
+    } else {
+      document.documentElement.setAttribute("data-color-scheme", DEFAULT_SCHEME);
+    }
+
+    window.markmonitorToggleColorScheme = function () {
+      var current = document.documentElement.getAttribute("data-color-scheme") || DEFAULT_SCHEME;
+      var next = current === "keyfactor-dark" ? "keyfactor" : "keyfactor-dark";
+      applyScheme(next);
+      try { localStorage.setItem(STORAGE_KEY, next); } catch (e) {}
+    };
+  })();
+</script>

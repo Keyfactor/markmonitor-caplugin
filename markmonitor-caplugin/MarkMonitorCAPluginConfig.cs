@@ -13,7 +13,6 @@
 // limitations under the License.
 
 using Keyfactor.AnyGateway.Extensions;
-using Newtonsoft.Json;
 
 namespace Keyfactor.Extensions.CAPlugin.MarkMonitor;
 
@@ -236,48 +235,6 @@ public class MarkMonitorCAPluginConfig
         /// The pickup poll delay (seconds) property name.
         /// </summary>
         public const string PickupDelaySeconds = "PickupDelaySeconds";
-    }
-
-    /// <summary>
-    /// Represents the configuration values for the MarkMonitor CA Plugin.
-    /// </summary>
-    public class Config
-    {
-        /// <summary>
-        /// The API key used to authenticate with the MarkMonitor API.
-        /// </summary>
-        [JsonProperty(ConfigConstants.ApiKey)]
-        public string ApiKey { get; set; }
-
-        /// <summary>
-        /// The password for the MarkMonitor API service account.
-        /// </summary>
-        [JsonProperty(ConfigConstants.ApiPassword)]
-        public string ApiPassword { get; set; }
-
-        /// <summary>
-        /// The username for the MarkMonitor API service account.
-        /// </summary>
-        [JsonProperty(ConfigConstants.ApiUsername)]
-        public string ApiUsername { get; set; }
-
-        /// <summary>
-        /// The base URL for the MarkMonitor API.
-        /// </summary>
-        [JsonProperty(ConfigConstants.BaseUrl)]
-        public string BaseUrl { get; set; }
-
-        /// <summary>
-        /// The organization name or ID used in MarkMonitor operations.
-        /// </summary>
-        [JsonProperty(ConfigConstants.OrgName)]
-        public string OrgName { get; set; }
-
-        /// <summary>
-        /// Indicates whether the MarkMonitor CA Plugin is enabled.
-        /// </summary>
-        [JsonProperty(ConfigConstants.Enabled)]
-        public bool Enabled { get; set; }
     }
 
     /// <summary>

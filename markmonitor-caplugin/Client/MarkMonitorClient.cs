@@ -1545,26 +1545,15 @@ public class MarkMonitorClient : IDisposable
             // this covers the exceptional path as well.
             var logSafeOrderId = LogSanitizer.ForLog(orderId);
             _logger.LogInformation("Cancelling certificate {CertificateId}", logSafeOrderId);
-            await EnsureAuthenticatedAsync();
 
-            await EnsureOrderBelongsToOrganizationAsync(orderId, orgName, "Cancelling", "cancel");
-
-            var url = $"{BaseUrl}/certs/v1/order/{orderId}/cancel";
-            _logger.LogDebug("Cancelling certificate at {Url}", url);
-            var payload = new StringContent("{}", Encoding.UTF8, "application/json");
-            // Unlike order-create, retrying a cancel is safe - cancelling an already-cancelled order
-            // is a no-op, not a second billable resource.
-            var response = await SendWithRetryAsync(() => _httpClient.PatchAsync(url, payload), "PATCH", url);
-
-            _logger.LogDebug("Reading response content");
-            var content = await response.Content.ReadAsStringAsync();
-            if (response.IsSuccessStatusCode)
+            var (success, errMsg) =
+                await PatchOrderActionAsync(orderId, orgName, "Cancelling", "cancel", "cancel");
+            if (success)
             {
                 _logger.LogInformation("Certificate {CertificateId} has been cancelled", logSafeOrderId);
                 return true;
             }
 
-            var errMsg = BuildErrorString(content);
             _logger.LogError("An error has occurred while attempting to cancel order {CertificateId}: {EMessage}",
                 logSafeOrderId, errMsg);
             throw new Exception(errMsg);
@@ -1579,6 +1568,27 @@ public class MarkMonitorClient : IDisposable
         {
             _logger.MethodExit();
         }
+    }
+
+    // Unlike order-create/reissue, retrying a cancel or revoke is safe - acting on an already-
+    // cancelled/revoked order is a no-op, not a second billable resource. Shared by
+    // CancelCertificateAsync and RevokeCertificateAsync, which differ only in log wording handled by
+    // each caller.
+    private async Task<(bool success, string errMsg)> PatchOrderActionAsync(string orderId, string orgName,
+        string ownershipGerund, string ownershipVerb, string urlSuffix)
+    {
+        await EnsureAuthenticatedAsync();
+
+        await EnsureOrderBelongsToOrganizationAsync(orderId, orgName, ownershipGerund, ownershipVerb);
+
+        var url = $"{BaseUrl}/certs/v1/order/{orderId}/{urlSuffix}";
+        _logger.LogDebug("{Gerund} certificate at {Url}", ownershipGerund, url);
+        var payload = new StringContent("{}", Encoding.UTF8, "application/json");
+        var response = await SendWithRetryAsync(() => _httpClient.PatchAsync(url, payload), "PATCH", url);
+
+        _logger.LogDebug("Reading response content");
+        var content = await response.Content.ReadAsStringAsync();
+        return response.IsSuccessStatusCode ? (true, null) : (false, BuildErrorString(content));
     }
 
     public async Task<bool> ReissueCertificateAsync(string orderId, MarkMonitorReissueRequest payload)
@@ -1649,26 +1659,15 @@ public class MarkMonitorClient : IDisposable
                 _logger.LogWarning(
                     "Revocation reason {Reason} was requested for order {OrderId}, but MarkMonitor's revoke API has no field for a reason code - it will not be sent",
                     reason, logSafeOrderId);
-            await EnsureAuthenticatedAsync();
 
-            await EnsureOrderBelongsToOrganizationAsync(orderId, orgName, "Revoking", "revoke");
-
-            var url = $"{BaseUrl}/certs/v1/order/{orderId}/revoke";
-            _logger.LogDebug("Revoking certificate at {Url}", url);
-            var payload = new StringContent("{}", Encoding.UTF8, "application/json");
-            // Unlike order-create, retrying a revoke is safe - revoking an already-revoked order is
-            // a no-op, not a second billable resource.
-            var response = await SendWithRetryAsync(() => _httpClient.PatchAsync(url, payload), "PATCH", url);
-
-            _logger.LogDebug("Reading response content");
-            var content = await response.Content.ReadAsStringAsync();
-            if (response.IsSuccessStatusCode)
+            var (success, errMsg) =
+                await PatchOrderActionAsync(orderId, orgName, "Revoking", "revoke", "revoke");
+            if (success)
             {
                 _logger.LogInformation("Certificate {CertificateId} has been revoked", logSafeOrderId);
                 return true;
             }
 
-            var errMsg = BuildErrorString(content);
             _logger.LogError("An error has occurred while attempting to revoke {CertificateId}: {EMessage}",
                 logSafeOrderId, errMsg);
             throw new Exception(errMsg);

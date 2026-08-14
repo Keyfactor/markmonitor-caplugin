@@ -93,6 +93,13 @@ sequenceDiagram
         Plugin->>API: POST /certs/v1/order (product, org, contact, DCV method, CSR)
         API-->>Plugin: Order created - order ID + status
 
+        opt Not yet issued and PickupRetries > 0
+            loop Up to PickupRetries times, every PickupDelaySeconds
+                Plugin->>API: Poll the order
+                API-->>Plugin: Current status
+            end
+        end
+
         alt Renewal / reissue
             Plugin->>API: Revoke the prior certificate
         end
@@ -100,6 +107,10 @@ sequenceDiagram
         Plugin-->>CMD: Enrollment result (order ID, mapped status)
     end
 ```
+
+A product whose DCV/approval resolves quickly can come back issued from this same enrollment call
+instead of always waiting for the next sync. Set `PickupRetries` to `0` to disable polling and
+restore the always-returns-pending behavior.
 
 ### Renewal / reissue
 
@@ -148,8 +159,11 @@ sequenceDiagram
 ## Connector validation
 
 When an administrator saves or edits the CA connector, the plugin checks the supplied fields before
-allowing it to be saved in an enabled state. This is a field-level check only - it doesn't make a
-live API call; `Ping` is the live connectivity check.
+allowing it to be saved in an enabled state. If the connector is being saved *enabled*, it also makes
+a live call to MarkMonitor to confirm the credentials actually work — using a client built from
+exactly what's about to be saved, not the connector's already-cached client. Saving with `Enabled`
+set to `false` skips that live check, so a connector can be created before real credentials are
+available.
 
 ```mermaid
 flowchart TD
@@ -159,12 +173,57 @@ flowchart TD
     C -- No --> E
     C -- Yes --> D{"Organization ID present?"}
     D -- Missing --> E
-    D -- Present --> F([Connector saved])
+    D -- Present --> N{"Enabled?"}
+    N -- No --> F([Connector saved])
+    N -- Yes --> G{"Authenticate with the<br/>submitted credentials"}
+    G -- Fails --> E
+    G -- Succeeds --> H{"At least one organization<br/>visible?"}
+    H -- No / fails --> E
+    H -- Yes --> F
 ```
 
 ---
 
-Looking for the full endpoint list, status mapping table, or implementation-level detail behind
-these diagrams? See
+## Order status mapping
+
+MarkMonitor order statuses are mapped to Keyfactor statuses as follows:
+
+| MarkMonitor order status | Keyfactor status |
+|---|---|
+| `DIGI_PENDING`, `DIGI_PROCESSING`, `DIGI_REISSUE_PENDING`, `DIGI_WAITING_PICKUP`, `REISSUE_PENDING`, `DIGI_NEEDS_APPROVAL`, `REISSUE_REQUEST_PENDING` | `INPROCESS` |
+| `CREATED` | `EXTERNALVALIDATION` (accepted, awaiting DCV/issuance) |
+| `DIGI_ISSUED` | `GENERATED` (issued) |
+| `DIGI_REVOKED` | `REVOKED` |
+| `DIGI_FAILED`, `DIGI_REISSUE_FAILED` | `FAILED` |
+| `DIGI_CANCELED`, `DIGI_REJECTED`, `DIGI_EXPIRED`, `DIGI_NEEDS_CSR` | `CANCELLED` |
+| *(null/empty or unrecognized status)* | `FAILED` |
+
+A freshly-submitted order (`CREATED`) is deliberately mapped to `EXTERNALVALIDATION` rather than a
+failure status — the order was accepted by MarkMonitor and is simply awaiting DCV or issuance. Once
+the order reaches `DIGI_ISSUED`, the next synchronization imports the certificate.
+
+## API endpoint reference
+
+| Operation | MarkMonitor API endpoint |
+|---|---|
+| Authenticate / obtain bearer token | `POST /auth/v1/auth/authenticate` (with `X-API-KEY` header) |
+| List certificate orders (sync) | `GET /certs/v1/order` (paginated via `page`/`size`) |
+| Get a single order | `GET /certs/v1/order/{orderId}` |
+| Place a new order (enroll) | `POST /certs/v1/order` |
+| Revoke a certificate | `PATCH /certs/v1/order/{orderId}/revoke` |
+| Cancel an order | `PATCH /certs/v1/order/{orderId}/cancel` |
+| Reissue a certificate | `PATCH /certs/v1/order/{orderId}/reissue` |
+| List organizations | `GET /certs/v1/organization` (paginated) |
+| Get an organization | `GET /certs/v1/organization/{orgId}` |
+| List groups | `GET /auth/v1/group` (paginated) |
+
+The cancel and reissue endpoints exist in the client but aren't currently used — a renewal/reissue
+places a new order and then revokes the prior certificate, rather than calling MarkMonitor's own
+reissue action.
+
+---
+
+Looking for implementation-level detail behind these diagrams — real class and method names, retry
+and locking behavior, template-parameter resolution rules? See
 [`DEVELOPMENT.md`](https://github.com/Keyfactor/markmonitor-caplugin/blob/main/DEVELOPMENT.md) in
 the repository.

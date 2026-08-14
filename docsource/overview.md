@@ -4,8 +4,8 @@ The MarkMonitor AnyCA Gateway REST plugin extends the certificate lifecycle capa
 MarkMonitor SSL certificate service to Keyfactor Command via the Keyfactor AnyCA Gateway REST. It
 implements `IAnyCAPlugin` and is loaded as a DLL extension by the AnyCA Gateway REST host process —
 it is not a standalone service. See [configuration.md](configuration.md) for full installation and
-configuration details, and [DEVELOPMENT.md](../DEVELOPMENT.md) for design notes, local development,
-and testing.
+configuration details, [architecture.md](architecture.md) for design notes, and
+[DEVELOPMENT.md](../DEVELOPMENT.md) for local development and testing.
 
 The plugin supports the following capabilities:
 

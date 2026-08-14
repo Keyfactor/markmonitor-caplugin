@@ -84,7 +84,8 @@ The script authenticates to the gateway's admin API (OAuth2 client-credentials, 
 pasted browser session cookie) and reads the product list from `integration-manifest.json`, so it
 stays in sync with the product IDs above without hand-entering each one. See
 `scripts/register-gateway-profiles.sh` and `scripts/lib/gateway-auth.sh` for the required environment
-variables.
+variables, or [Gateway Certificate Profile Quickstart](docsource/gateway-profile-quickstart.md) for a
+walkthrough of each supported auth method.
 
 ## CA Connection Configuration
 

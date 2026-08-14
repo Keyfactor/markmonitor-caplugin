@@ -1,0 +1,48 @@
+name: CODEMAP freshness
+
+# Guards the honor-system rule in docsource/CODEMAP.md: a PR that changes plugin
+# source must also update the codemap, so agents/humans can trust it as the
+# orientation map. The generated root README.md is handled separately by the
+# Keyfactor bootstrap workflow (it auto-commits a regenerated README), so this
+# check deliberately covers only the hand-maintained CODEMAP.
+#
+# Escape hatch: add the "skip-codemap" label to a PR when a source change
+# genuinely does not affect the codemap (e.g. a comment-only or whitespace edit).
+
+on:
+  pull_request:
+    paths:
+      - 'markmonitor-caplugin/**'
+
+jobs:
+  codemap:
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-codemap') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require CODEMAP update when plugin source changes
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only "$BASE" "$HEAD")"
+
+          # Production plugin source only: exclude build output and the test project.
+          src="$(printf '%s\n' "$changed" \
+            | grep -E '^markmonitor-caplugin/.*\.cs$' \
+            | grep -vE '/(bin|obj)/' || true)"
+
+          codemap="$(printf '%s\n' "$changed" | grep -E '^docsource/CODEMAP\.md$' || true)"
+
+          if [ -n "$src" ] && [ -z "$codemap" ]; then
+            echo "::error::Plugin source changed but docsource/CODEMAP.md was not updated. Update the codemap to match, or add the 'skip-codemap' label if this change genuinely does not affect it."
+            echo "Changed plugin source files:"
+            printf '  %s\n' $src
+            exit 1
+          fi
+
+          echo "CODEMAP freshness check passed."

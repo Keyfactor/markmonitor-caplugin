@@ -1,3 +1,17 @@
+// Copyright 2026 Keyfactor
+// 
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+// 
+//     http://www.apache.org/licenses/LICENSE-2.0
+// 
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 using Org.BouncyCastle.Asn1.Sec;
 using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Crypto;
@@ -117,7 +131,12 @@ public class CsrGenerator
     {
         var keyPairGen = new ECKeyPairGenerator();
         var ecSpec = SecNamedCurves.GetByName("secp256r1"); // P-256 curve
-        var ecDomainParams = new ECDomainParameters(ecSpec.Curve, ecSpec.G, ecSpec.N, ecSpec.H);
+        // ECNamedDomainParameters (not plain ECDomainParameters) is required so the CSR's
+        // SubjectPublicKeyInfo references the named curve by OID rather than spelling out explicit
+        // curve parameters (prime/coefficients/base point) - CA/Browser Forum baseline requirements
+        // disallow explicit EC parameters for publicly-trusted certs, and DigiCert silently rejects
+        // such a CSR (order fails almost instantly, with no reason surfaced via MarkMonitor's API).
+        var ecDomainParams = new ECNamedDomainParameters(SecObjectIdentifiers.SecP256r1, ecSpec);
         var keyGenParams =
             new ECKeyGenerationParameters(ecDomainParams, new SecureRandom(new CryptoApiRandomGenerator()));
         keyPairGen.Init(keyGenParams);

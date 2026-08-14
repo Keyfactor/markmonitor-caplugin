@@ -68,6 +68,24 @@ running, navigate to the AnyCA Gateway REST portal and configure the CA.
 
 ![gateway_registration_store.png](docsource/images/gateway_registration_store.png)
 
+## Certificate Profiles
+
+The AnyCA Gateway REST portal requires a **certificate profile** for each MarkMonitor product you
+intend to enroll against (see [Product IDs](#product-ids)) — this is separate from both the CA
+connector configuration below and the Command certificate templates created afterward. Profiles can
+be created by hand in the gateway portal, or with the helper script this repo ships:
+
+```shell
+just register-gateway-profiles          # create/update one profile per product, idempotent
+just register-gateway-profiles 1        # dry run — preview only, no gateway calls
+```
+
+The script authenticates to the gateway's admin API (OAuth2 client-credentials, a bearer token, or a
+pasted browser session cookie) and reads the product list from `integration-manifest.json`, so it
+stays in sync with the product IDs above without hand-entering each one. See
+`scripts/register-gateway-profiles.sh` and `scripts/lib/gateway-auth.sh` for the required environment
+variables.
+
 ## CA Connection Configuration
 
 The following fields are presented in the AnyCA Gateway REST portal (and the Keyfactor Command

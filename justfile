@@ -113,6 +113,15 @@ cancel-by-name common_name:
       -H "X-API-KEY: $MARKMONITOR_API_TOKEN" -H "Authorization: Bearer $BEARER" -H "Content-Type: application/json" -d '{}' \
       | jq -r '.status // .'
 
+# Register/update this plugin's AnyCA REST Gateway certificate profiles (one per
+# product in integration-manifest.json). Needs GATEWAY_HOST + gateway auth - see
+# scripts/lib/gateway-auth.sh. Set dry_run=1 to preview with no gateway calls, or
+# check=1 to list resulting profiles after applying.
+register-gateway-profiles dry_run="0" check="0":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    DRY_RUN={{dry_run}} CHECK={{check}} "{{justfile_directory()}}/scripts/register-gateway-profiles.sh"
+
 # Preview the docs/ GitHub Pages site at http://localhost:4000/markmonitor-caplugin/ (needs Docker)
 docs-preview:
     docker rm -f markmonitor-docs-preview 2>/dev/null || true

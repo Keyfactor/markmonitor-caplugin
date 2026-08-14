@@ -1,0 +1,40 @@
+// Dark/light toggle button (see _includes/header_custom.html and head_custom.html). Included by
+// the theme's own css/custom.scss.liquid hook, so it's bundled into every generated color-scheme
+// stylesheet automatically.
+.color-scheme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin-left: 8px;
+  padding: 0;
+  border: 1px solid $border-color;
+  border-radius: 6px;
+  background: none;
+  color: $body-text-color;
+  cursor: pointer;
+}
+
+.color-scheme-toggle:hover {
+  background-color: $base-button-color;
+}
+
+.color-scheme-toggle-icon {
+  width: 16px;
+  height: 16px;
+}
+
+// Default (and dark scheme): show the sun - clicking switches to light.
+.color-scheme-toggle-icon--moon {
+  display: none;
+}
+
+// Light scheme: show the moon - clicking switches to dark.
+html[data-color-scheme="keyfactor"] .color-scheme-toggle-icon--sun {
+  display: none;
+}
+
+html[data-color-scheme="keyfactor"] .color-scheme-toggle-icon--moon {
+  display: block;
+}

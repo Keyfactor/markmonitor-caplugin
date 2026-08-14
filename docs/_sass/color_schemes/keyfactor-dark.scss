@@ -1,0 +1,20 @@
+// Dark-mode counterpart to ./keyfactor.scss - same purple brand accent (lightened for
+// contrast against a dark background), theme dark neutrals otherwise.
+$color-scheme: dark;
+$body-background-color: $grey-dk-300;
+$sidebar-color: $grey-dk-300;
+$body-text-color: $grey-lt-300;
+$body-heading-color: $grey-lt-000;
+$link-color: lighten(#6844df, 18%);
+$nav-child-link-color: $grey-dk-000;
+$border-color: $grey-dk-200;
+$btn-primary-color: lighten(#6844df, 12%);
+$base-button-color: $grey-dk-250;
+$code-background-color: #0d1117; // github-dark bg color
+$code-linenumber-color: #e6edf3; // github-dark line number color
+$feedback-color: darken($sidebar-color, 3%);
+$table-background-color: $grey-dk-250;
+$search-background-color: $grey-dk-250;
+$search-result-preview-color: $grey-lt-300;
+
+@import "./vendor/accessible-pygments/github-dark";

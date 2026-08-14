@@ -365,3 +365,20 @@ FodyWeavers.xsd
 *.env
 *.env.local
 *.idea/
+
+# Local scratch/sandbox artifacts - contain sandbox credentials or org/contact data
+# and are not meant to be committed.
+.DS_Store
+/order_from_*.json
+TestConsole/Scripts/
+TestConsole/lib/list_real.json
+TestConsole/lib/request.json
+# Claude Code local settings (never commit)
+.claude/
+
+# Jekyll local preview build output/vendored gems (see `just docs-preview`)
+docs/_site/
+docs/.jekyll-cache/
+docs/.bundle/
+docs/vendor/
+docs/Gemfile.lock

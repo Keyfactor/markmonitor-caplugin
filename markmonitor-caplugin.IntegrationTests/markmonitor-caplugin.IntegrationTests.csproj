@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Keyfactor.Extensions.CAPlugin.MarkMonitor.IntegrationTests</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.5.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- markmonitor-caplugin: the client/models under test.
+         TestConsole: reused purely for its CsrGenerator/EmailAddressGenerator helpers, so that CSR
+         and test-email generation logic isn't duplicated between the manual smoke-test console and
+         this automated live-API suite. -->
+    <ProjectReference Include="..\markmonitor-caplugin\markmonitor-caplugin.csproj" />
+    <ProjectReference Include="..\TestConsole\TestConsole.csproj" />
+  </ItemGroup>
+
+</Project>

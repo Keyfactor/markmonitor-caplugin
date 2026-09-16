@@ -1,0 +1,16 @@
+{
+  "cert": {
+    "dnsNames": [
+      "string"
+    ],
+    "csr": "string",
+    "serverPlatform": "APACHE",
+    "algorithmHash": "RSA",
+    "rootHash": "SHA_1"
+  },
+  "ignoreOrgCheck": true,
+  "additionalEmails": [
+    "additional.email.1@yourdomain.com",
+    "additional.email.2@yourdomain.com"
+  ]
+}
